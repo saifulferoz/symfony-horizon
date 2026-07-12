@@ -114,15 +114,15 @@ class RedisStorage implements StorageInterface
         }
     }
 
-    public function recordJobFailed(string $jobId, string $errorMessage, string $stackTrace): void
+    public function recordJobFailed(string $jobId, string $errorMessage, string $stackTrace, array $jobData = []): void
     {
         $key = $this->prefix . 'job:' . $jobId;
-        $this->hMSet($key, [
+        $this->hMSet($key, array_merge($jobData, [
             'status' => 'failed',
             'failed_at' => (string) microtime(true),
             'exception' => $errorMessage,
             'stack_trace' => $stackTrace,
-        ]);
+        ]));
 
         $this->redis->lpush($this->prefix . 'jobs:failed', $jobId);
         $this->redis->ltrim($this->prefix . 'jobs:failed', 0, 999);

@@ -47,7 +47,7 @@ interface StorageInterface
     /**
      * Records that a job failed to process.
      */
-    public function recordJobFailed(string $jobId, string $errorMessage, string $stackTrace): void;
+    public function recordJobFailed(string $jobId, string $errorMessage, string $stackTrace, array $jobData = []): void;
 
     /**
      * Fetches details of a specific job.

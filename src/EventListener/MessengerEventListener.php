@@ -59,7 +59,7 @@ class MessengerEventListener implements EventSubscriberInterface
             'pid' => (string) getmypid(),
             'host' => gethostname(),
             'transports' => implode(', ', $event->getWorker()->getMetadata()->getTransportNames()),
-            'status' => $event->isIdle() ? 'idle' : 'processing',
+            'status' => $event->isWorkerIdle() ? 'idle' : 'processing',
         ]);
     }
 
@@ -117,8 +117,15 @@ class MessengerEventListener implements EventSubscriberInterface
         $envelope = $event->getEnvelope();
         $jobId = $this->getEnvelopeId($envelope);
         $exception = $event->getThrowable();
+        $message = $envelope->getMessage();
 
-        $this->storage->recordJobFailed($jobId, $exception->getMessage(), $exception->getTraceAsString());
+        $this->storage->recordJobFailed($jobId, $exception->getMessage(), $exception->getTraceAsString(), [
+            'id' => $jobId,
+            'class' => get_class($message),
+            'queue' => $event->getReceiverName(),
+            'payload' => $this->serializeMessage($message),
+            'tags' => json_encode($this->extractTags($message)),
+        ]);
 
         $this->storage->recordWorkerHeartbeat($this->workerId, [
             'status' => 'idle',
@@ -134,7 +141,7 @@ class MessengerEventListener implements EventSubscriberInterface
         }
 
         // Fallback to a hash representing this specific execution cycle
-        return md5(spl_object_hash($envelope->getMessage()) . '_' . microtime(true));
+        return md5(spl_object_hash($envelope->getMessage()) . '_' . spl_object_hash($envelope));
     }
 
     private function serializeMessage(object $message): string
