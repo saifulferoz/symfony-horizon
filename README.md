@@ -66,7 +66,7 @@ Import the routes in `config/routes.yaml`:
 
 ```yaml
 symfony_horizon:
-    resource: '@SymfonyHorizonBundle/src/Controller/'
+    resource: '@SymfonyHorizonBundle/Controller/'
     type: attribute
 ```
 

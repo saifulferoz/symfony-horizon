@@ -5,6 +5,7 @@ services:
         public: false
         bind:
             $receiverLocator: '@messenger.receiver_locator'
+            $role: '%symfony_horizon.dashboard_role%'
 
     Saifulferoz\SymfonyHorizon\:
         resource: '../../'

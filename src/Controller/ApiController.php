@@ -11,6 +11,8 @@ use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Transport\Receiver\ListableReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
+use Symfony\Component\Security\Core\Exception\AccessDeniedException;
 
 class ApiController
 {
@@ -18,22 +20,30 @@ class ApiController
     private MessageBusInterface $messageBus;
     private array $config;
     private ?ContainerInterface $receiverLocator;
+    private ?AuthorizationCheckerInterface $authorizationChecker;
+    private ?string $role;
 
     public function __construct(
         StorageInterface $storage,
         MessageBusInterface $messageBus,
         array $config,
-        ?ContainerInterface $receiverLocator = null
+        ?ContainerInterface $receiverLocator = null,
+        ?AuthorizationCheckerInterface $authorizationChecker = null,
+        ?string $role = null
     ) {
         $this->storage = $storage;
         $this->messageBus = $messageBus;
         $this->config = $config;
         $this->receiverLocator = $receiverLocator;
+        $this->authorizationChecker = $authorizationChecker;
+        $this->role = $role;
     }
 
-    #[Route('/api/horizon/stats', name: 'symfony_horizon_api_stats', methods: ['GET'])]
+    #[Route('/horizon/api/stats', name: 'symfony_horizon_api_stats', methods: ['GET'])]
     public function stats(): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $metrics = $this->storage->getDashboardMetrics();
 
         // Add active count from supervisor heartbeats
@@ -51,15 +61,19 @@ class ApiController
         ]));
     }
 
-    #[Route('/api/horizon/supervisors', name: 'symfony_horizon_api_supervisors', methods: ['GET'])]
+    #[Route('/horizon/api/supervisors', name: 'symfony_horizon_api_supervisors', methods: ['GET'])]
     public function supervisors(): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         return new JsonResponse($this->storage->getSupervisors());
     }
 
-    #[Route('/api/horizon/workloads', name: 'symfony_horizon_api_workloads', methods: ['GET'])]
+    #[Route('/horizon/api/workloads', name: 'symfony_horizon_api_workloads', methods: ['GET'])]
     public function workloads(): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $workloads = [];
         $supervisorsConfig = $this->config['supervisors'] ?? [];
 
@@ -85,27 +99,33 @@ class ApiController
         return new JsonResponse(array_values($workloads));
     }
 
-    #[Route('/api/horizon/jobs/recent', name: 'symfony_horizon_api_jobs_recent', methods: ['GET'])]
+    #[Route('/horizon/api/jobs/recent', name: 'symfony_horizon_api_jobs_recent', methods: ['GET'])]
     public function recent(Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $limit = $request->query->getInt('limit', 50);
         $offset = $request->query->getInt('offset', 0);
 
         return new JsonResponse($this->storage->getRecentJobs($limit, $offset));
     }
 
-    #[Route('/api/horizon/jobs/failed', name: 'symfony_horizon_api_jobs_failed', methods: ['GET'])]
+    #[Route('/horizon/api/jobs/failed', name: 'symfony_horizon_api_jobs_failed', methods: ['GET'])]
     public function failed(Request $request): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $limit = $request->query->getInt('limit', 50);
         $offset = $request->query->getInt('offset', 0);
 
         return new JsonResponse($this->storage->getFailedJobs($limit, $offset));
     }
 
-    #[Route('/api/horizon/jobs/failed/retry/{id}', name: 'symfony_horizon_api_failed_retry', methods: ['POST'])]
+    #[Route('/horizon/api/jobs/failed/retry/{id}', name: 'symfony_horizon_api_failed_retry', methods: ['POST'])]
     public function retry(string $id): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $failureTransport = $this->config['failure_transport'] ?? 'failed';
 
         if ($this->receiverLocator && $this->receiverLocator->has($failureTransport)) {
@@ -128,9 +148,11 @@ class ApiController
         return new JsonResponse(['error' => 'Job or failure transport not found.'], 404);
     }
 
-    #[Route('/api/horizon/jobs/failed/delete/{id}', name: 'symfony_horizon_api_failed_delete', methods: ['POST'])]
+    #[Route('/horizon/api/jobs/failed/delete/{id}', name: 'symfony_horizon_api_failed_delete', methods: ['POST'])]
     public function delete(string $id): JsonResponse
     {
+        $this->denyAccessUnlessGranted();
+
         $failureTransport = $this->config['failure_transport'] ?? 'failed';
 
         if ($this->receiverLocator && $this->receiverLocator->has($failureTransport)) {
@@ -145,5 +167,16 @@ class ApiController
 
         $this->storage->deleteFailedJob($id);
         return new JsonResponse(['success' => true]);
+    }
+
+    private function denyAccessUnlessGranted(): void
+    {
+        if (!$this->authorizationChecker || !$this->role) {
+            return;
+        }
+
+        if (!$this->authorizationChecker->isGranted($this->role)) {
+            throw new AccessDeniedException(sprintf('Access Denied. Required role: %s', $this->role));
+        }
     }
 }

@@ -896,7 +896,7 @@
 
         function pollData() {
             // 1. Stats endpoint
-            fetch('/api/horizon/stats')
+            fetch('/horizon/api/stats')
                 .then(res => res.json())
                 .then(data => {
                     stats = data;
@@ -919,7 +919,7 @@
 
             // 2. Supervisors
             if (currentTab === 'supervisors' || currentTab === 'overview') {
-                fetch('/api/horizon/supervisors')
+                fetch('/horizon/api/supervisors')
                     .then(res => res.json())
                     .then(data => {
                         supervisors = data;
@@ -931,7 +931,7 @@
 
             // 3. Workloads
             if (currentTab === 'workloads') {
-                fetch('/api/horizon/workloads')
+                fetch('/horizon/api/workloads')
                     .then(res => res.json())
                     .then(data => {
                         workloads = data;
@@ -942,7 +942,7 @@
 
             // 4. Recent Jobs
             if (currentTab === 'recent') {
-                fetch('/api/horizon/jobs/recent')
+                fetch('/horizon/api/jobs/recent')
                     .then(res => res.json())
                     .then(data => {
                         recentJobs = data;
@@ -953,7 +953,7 @@
 
             // 5. Failed Jobs
             if (currentTab === 'failed') {
-                fetch('/api/horizon/jobs/failed')
+                fetch('/horizon/api/jobs/failed')
                     .then(res => res.json())
                     .then(data => {
                         failedJobs = data;
@@ -1108,7 +1108,7 @@
 
         // Retry & Delete Actions
         function retryJob(id) {
-            fetch(`/api/horizon/jobs/failed/retry/${id}`, { method: 'POST' })
+            fetch(`/horizon/api/jobs/failed/retry/${id}`, { method: 'POST' })
                 .then(res => {
                     if (res.ok) {
                         showToast('success', 'Job re-queued successfully!');
@@ -1122,7 +1122,7 @@
 
         function deleteJob(id) {
             if (!confirm('Are you sure you want to delete this failed job log?')) return;
-            fetch(`/api/horizon/jobs/failed/delete/${id}`, { method: 'POST' })
+            fetch(`/horizon/api/jobs/failed/delete/${id}`, { method: 'POST' })
                 .then(res => {
                     if (res.ok) {
                         showToast('success', 'Failed job log deleted.');
