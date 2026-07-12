@@ -218,11 +218,12 @@ class ApiController
                 }
 
                 $message = $envelope->getMessage();
+                $originalQueue = $redeliveryStamp ? $redeliveryStamp->getReceiverName() : $failureTransport;
 
                 $failedJobs[] = [
                     'id' => $id,
                     'class' => get_class($message),
-                    'queue' => $failureTransport,
+                    'queue' => $originalQueue ?: $failureTransport,
                     'exception' => $errorStamp ? $errorStamp->getExceptionMessage() : 'Unknown error',
                     'stack_trace' => ($errorStamp && $errorStamp->getFlattenException()) ? $errorStamp->getFlattenException()->getTraceAsString() : '',
                     'failed_at' => ($redeliveryStamp && $redeliveryStamp->getRedeliveredAt()) ? (string) $redeliveryStamp->getRedeliveredAt()->getTimestamp() : (string) time(),
