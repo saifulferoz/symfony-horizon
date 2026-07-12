@@ -194,34 +194,45 @@ class ApiController
             return null;
         }
 
-        $envelopes = $receiver->all($limit + $offset);
+        try {
+            $envelopes = $receiver->all($limit + $offset);
+        } catch (\Throwable $e) {
+            // Return null to trigger the fallback to Redis storage logs if the entire batch fails to decode
+            return null;
+        }
+
         if ($offset > 0) {
             $envelopes = array_slice($envelopes, $offset);
         }
 
         $failedJobs = [];
         foreach ($envelopes as $envelope) {
-            $idStamp = $envelope->last(TransportMessageIdStamp::class);
-            $errorStamp = $envelope->last(ErrorDetailsStamp::class);
-            $redeliveryStamp = $envelope->last(RedeliveryStamp::class);
+            try {
+                $idStamp = $envelope->last(TransportMessageIdStamp::class);
+                $errorStamp = $envelope->last(ErrorDetailsStamp::class);
+                $redeliveryStamp = $envelope->last(RedeliveryStamp::class);
 
-            $id = $idStamp ? (string) $idStamp->getId() : null;
-            if ($id === null) {
+                $id = $idStamp ? (string) $idStamp->getId() : null;
+                if ($id === null) {
+                    continue;
+                }
+
+                $message = $envelope->getMessage();
+
+                $failedJobs[] = [
+                    'id' => $id,
+                    'class' => get_class($message),
+                    'queue' => $failureTransport,
+                    'exception' => $errorStamp ? $errorStamp->getExceptionMessage() : 'Unknown error',
+                    'stack_trace' => ($errorStamp && $errorStamp->getFlattenException()) ? $errorStamp->getFlattenException()->getTraceAsString() : '',
+                    'failed_at' => ($redeliveryStamp && $redeliveryStamp->getRedeliveredAt()) ? (string) $redeliveryStamp->getRedeliveredAt()->getTimestamp() : (string) time(),
+                    'payload' => $this->serializeMessage($message),
+                    'status' => 'failed',
+                ];
+            } catch (\Throwable $e) {
+                // If a single message fails to decode/unserialize, skip it and continue processing the rest of the queue
                 continue;
             }
-
-            $message = $envelope->getMessage();
-
-            $failedJobs[] = [
-                'id' => $id,
-                'class' => get_class($message),
-                'queue' => $failureTransport,
-                'exception' => $errorStamp ? $errorStamp->getExceptionMessage() : 'Unknown error',
-                'stack_trace' => ($errorStamp && $errorStamp->getFlattenException()) ? $errorStamp->getFlattenException()->getTraceAsString() : '',
-                'failed_at' => ($redeliveryStamp && $redeliveryStamp->getRedeliveredAt()) ? (string) $redeliveryStamp->getRedeliveredAt()->getTimestamp() : (string) time(),
-                'payload' => $this->serializeMessage($message),
-                'status' => 'failed',
-            ];
         }
 
         return $failedJobs;
