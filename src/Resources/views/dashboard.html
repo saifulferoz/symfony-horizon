@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Symfony Horizon - Dashboard</title>
+    <style>
+        /* Base styling */
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 24, 39, 0.75);
+            --card-bg: rgba(31, 41, 55, 0.4);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+            --cyan: #22d3ee;
+            --purple: #a78bfa;
+            --green: #34d399;
+            --red: #f87171;
+            --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(34, 211, 238, 0.04) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(167, 139, 250, 0.04) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-color);
+            min-height: 100vh;
+            line-height: 1.5;
+            padding-bottom: 3rem;
+        }
+
+        .container {
+            max-w: 1200px;
+            width: 90%;
+            margin: 0 auto;
+        }
+
+        /* Layout & Header */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 40;
+            background: rgba(11, 15, 25, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            height: 70px;
+            display: flex;
+            align-items: center;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-box {
+            height: 38px;
+            width: 38px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--cyan), var(--purple));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: #0b0f19;
+            box-shadow: 0 4px 15px rgba(34, 211, 238, 0.25);
+        }
+
+        .logo-text h1 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #ffffff;
+        }
+
+        .logo-text h1 span {
+            color: var(--cyan);
+        }
+
+        .logo-subtitle {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            letter-spacing: 0.15em;
+            font-weight: 600;
+            margin-top: -2px;
+        }
+
+        /* Navigation Tabs */
+        nav {
+            display: flex;
+            background: rgba(17, 24, 39, 0.9);
+            padding: 4px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            gap: 4px;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            padding: 8px 16px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tab-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .tab-btn:hover {
+            color: #ffffff;
+        }
+
+        .tab-btn.active {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.08);
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        /* Content Sections */
+        .content-section {
+            margin-top: 2rem;
+            display: none;
+        }
+
+        .content-section.active {
+            display: block;
+        }
+
+        /* Panels & Cards */
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 16px;
+            padding: 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            border-color: rgba(34, 211, 238, 0.15);
+            transform: translateY(-2px);
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 0.25rem;
+        }
+
+        .stat-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .stat-icon {
+            padding: 10px;
+            background: rgba(17, 24, 39, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .stat-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .pulse-dot {
+            height: 10px;
+            width: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .pulse-dot.active {
+            background-color: var(--green);
+            box-shadow: 0 0 10px var(--green);
+            animation: pulse 1.5s infinite;
+        }
+
+        .pulse-dot.inactive {
+            background-color: var(--red);
+            box-shadow: 0 0 10px var(--red);
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+        }
+
+        /* Charts */
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* Tables */
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .panel-header h2 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-header h2 svg {
+            width: 16px;
+            height: 16px;
+            fill: var(--cyan);
+        }
+
+        .badge {
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 20px;
+            text-transform: uppercase;
+        }
+
+        .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--purple); border: 1px solid rgba(167, 139, 250, 0.25); }
+        .badge-cyan { background: rgba(34, 211, 238, 0.15); color: var(--cyan); border: 1px solid rgba(34, 211, 238, 0.25); }
+        .badge-green { background: rgba(52, 211, 153, 0.15); color: var(--green); border: 1px solid rgba(52, 211, 153, 0.25); }
+        .badge-red { background: rgba(248, 113, 113, 0.15); color: var(--red); border: 1px solid rgba(248, 113, 113, 0.25); }
+
+        .table-responsive {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(11, 15, 25, 0.3);
+        }
+
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-size: 0.85rem;
+            color: #d1d5db;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        .mono {
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+        }
+
+        .truncate {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 250px;
+        }
+
+        /* Buttons & Actions */
+        .btn-group {
+            display: flex;
+            gap: 6px;
+            justify-content: flex-end;
+        }
+
+        .btn-icon {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: all 0.2s ease;
+        }
+
+        .btn-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .btn-icon:hover {
+            color: #ffffff;
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .btn-icon.btn-cyan:hover {
+            color: var(--cyan);
+            border-color: rgba(34, 211, 238, 0.3);
+            background: rgba(34, 211, 238, 0.1);
+        }
+
+        .btn-icon.btn-red:hover {
+            color: var(--red);
+            border-color: rgba(248, 113, 113, 0.3);
+            background: rgba(248, 113, 113, 0.1);
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-filled-cyan {
+            background: var(--cyan);
+            color: #0b0f19;
+        }
+
+        .btn-filled-cyan:hover {
+            opacity: 0.9;
+        }
+
+        .btn-outline-red {
+            border-color: rgba(248, 113, 113, 0.3);
+            color: var(--red);
+            background: rgba(248, 113, 113, 0.05);
+        }
+
+        .btn-outline-red:hover {
+            background: rgba(248, 113, 113, 0.15);
+        }
+
+        /* Modals */
+        .modal {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 800px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            display: flex;
+            flex-col: column;
+            max-height: 85vh;
+        }
+
+        .modal-header {
+            padding: 1.25rem 1.5rem;
+            background: rgba(11, 15, 25, 0.5);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.25rem;
+            cursor: pointer;
+        }
+
+        .close-btn:hover {
+            color: #ffffff;
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+            flex-grow: 1;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            background: rgba(11, 15, 25, 0.5);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .meta-card {
+            background: rgba(11, 15, 25, 0.4);
+            border: 1px solid var(--border-color);
+            padding: 10px 14px;
+            border-radius: 10px;
+        }
+
+        .meta-card span.lbl {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 700;
+            display: block;
+        }
+
+        .meta-card span.val {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #ffffff;
+        }
+
+        pre {
+            background: rgba(11, 15, 25, 0.6);
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            border-radius: 10px;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            overflow-x: auto;
+            color: var(--cyan);
+            white-space: pre-wrap;
+            margin-bottom: 1.5rem;
+        }
+
+        .trace-box {
+            color: #fca5a5;
+            background: rgba(248, 113, 113, 0.05);
+            border-color: rgba(248, 113, 113, 0.15);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        /* Toasts */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 99;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border-left-width: 4px;
+            animation: slideIn 0.3s ease forwards;
+        }
+
+        .toast.success { border-left-color: var(--green); }
+        .toast.error { border-left-color: var(--red); }
+
+        .toast svg {
+            width: 16px;
+            height: 16px;
+        }
+        .toast.success svg { fill: var(--green); }
+        .toast.error svg { fill: var(--red); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <div class="logo-section">
+                    <div class="logo-box">H</div>
+                    <div class="logo-text">
+                        <h1>SYMFONY<span>HORIZON</span></h1>
+                        <div class="logo-subtitle">MESSENGER MONITOR</div>
+                    </div>
+                </div>
+
+                <nav>
+                    <button class="tab-btn active" onclick="switchTab('overview')">
+                        <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>
+                        Overview
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('supervisors')">
+                        <svg viewBox="0 0 24 24"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm13-6H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 13c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9C5.9 9 5 8.1 5 7s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                        Supervisors
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('workloads')">
+                        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+                        Workloads
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('recent')">
+                        <svg viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+                        Recent Jobs
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('failed')">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                        Failed Jobs
+                    </button>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Toast Target -->
+        <div class="toast-container" id="toastContainer"></div>
+
+        <!-- 1. OVERVIEW TAB -->
+        <div id="overview" class="content-section active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div>
+                        <span class="stat-label">Daemon Status</span>
+                        <div class="stat-value-container">
+                            <span class="pulse-dot inactive" id="statusDot"></span>
+                            <span class="stat-value" id="statusVal">Inactive</span>
+                        </div>
+                    </div>
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="var(--cyan)"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div>
+                        <span class="stat-label">Total Jobs</span>
+                        <div class="stat-value-container">
+                            <span class="stat-value" id="totalJobsVal">0</span>
+                        </div>
+                    </div>
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="var(--purple)"><path d="M20 6h-4V4c0-1.11-.89-2-2-2h-4c-1.11 0-2 .89-2 2v2H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-8-2h4v2h-4V4zm8 15H4V8h16v11z"/></svg>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div>
+                        <span class="stat-label">Throughput / M</span>
+                        <div class="stat-value-container">
+                            <span class="stat-value" id="throughputVal" style="color: var(--cyan);">0</span>
+                        </div>
+                    </div>
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="var(--cyan)"><path d="M11.5 9H13v6h-1.5zM9 11h1.5v4H9zm5 2h1.5v2H14zm2-10H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H8V5h8v14z"/></svg>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div>
+                        <span class="stat-label">Failed Jobs</span>
+                        <div class="stat-value-container">
+                            <span class="stat-value" id="failedJobsVal">0</span>
+                        </div>
+                    </div>
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="var(--red)"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Throughput Chart panel -->
+            <div class="glass-panel">
+                <div class="panel-header">
+                    <h2>
+                        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L3 15.69l.5 2.8z"/></svg>
+                        Real-Time Queue Throughput
+                    </h2>
+                </div>
+                <div class="chart-container">
+                    <canvas id="throughputChart" width="1000" height="250"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. SUPERVISORS TAB -->
+        <div id="supervisors" class="content-section">
+            <div class="glass-panel">
+                <div class="panel-header">
+                    <h2>
+                        <svg viewBox="0 0 24 24"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1z"/></svg>
+                        Active Supervisors
+                    </h2>
+                    <span class="badge badge-purple" id="supervisorsBadge">0 Active</span>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>PID</th>
+                                <th>Connection</th>
+                                <th>Queues</th>
+                                <th>Workers (Active / Target)</th>
+                                <th style="text-align: right;">Last Heartbeat</th>
+                            </tr>
+                        </thead>
+                        <tbody id="supervisorsTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. WORKLOADS TAB -->
+        <div id="workloads" class="content-section">
+            <div class="glass-panel">
+                <div class="panel-header">
+                    <h2>
+                        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+                        Queue Workloads
+                    </h2>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Queue Name / Transport</th>
+                                <th>Messenger Connection</th>
+                                <th style="text-align: right;">Pending Message Backlog</th>
+                            </tr>
+                        </thead>
+                        <tbody id="workloadsTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. RECENT JOBS TAB -->
+        <div id="recent" class="content-section">
+            <div class="glass-panel">
+                <div class="panel-header">
+                    <h2>
+                        <svg viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>
+                        Recently Processed Jobs
+                    </h2>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Job Class</th>
+                                <th>Queue</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th style="text-align: right;">Processed At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentJobsTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5. FAILED JOBS TAB -->
+        <div id="failed" class="content-section">
+            <div class="glass-panel">
+                <div class="panel-header">
+                    <h2>
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                        Failed Job Log
+                    </h2>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Job Class</th>
+                                <th>Queue</th>
+                                <th>Exception Message</th>
+                                <th>Failed At</th>
+                                <th style="text-align: right; width: 140px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="failedJobsTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Detailed Exception Modal -->
+    <div class="modal" id="exceptionModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <span style="font-size: 0.7rem; color: var(--red); font-weight: 700; text-transform: uppercase;">Failed Job Inspector</span>
+                    <h3 id="modalJobClass" class="mono truncate" style="margin-top: 2px;">JobClass</h3>
+                </div>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="meta-grid">
+                    <div class="meta-card">
+                        <span class="lbl">Transport Queue</span>
+                        <span class="val" id="modalJobQueue">-</span>
+                    </div>
+                    <div class="meta-card">
+                        <span class="lbl">Failed At</span>
+                        <span class="val" id="modalJobFailedAt">-</span>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 1rem;">
+                    <span class="lbl" style="font-size: 0.75rem; font-weight: 700; display: block; margin-bottom: 6px;">Job Payload Parameters</span>
+                    <pre id="modalJobPayload">Payload data...</pre>
+                </div>
+
+                <div>
+                    <span class="lbl" style="font-size: 0.75rem; font-weight: 700; display: block; margin-bottom: 6px; color: var(--red);">Stack Trace</span>
+                    <pre class="trace-box" id="modalJobTrace">Trace...</pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-red" id="modalDeleteBtn">Delete Log</button>
+                <button class="btn btn-filled-cyan" id="modalRetryBtn">Retry Job</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script Logic -->
+    <script>
+        let currentTab = 'overview';
+        let stats = { status: 'inactive', total_jobs: 0, failed_jobs: 0, throughput_per_minute: 0 };
+        let supervisors = {};
+        let workloads = [];
+        let recentJobs = [];
+        let failedJobs = [];
+        let activeFailedJob = null;
+
+        // Charting variables
+        let chartData = Array(15).fill(0);
+        let chartLabels = Array(15).fill('');
+
+        // Initialize time labels
+        for (let i = 0; i < 15; i++) {
+            const d = new Date();
+            d.setSeconds(d.getSeconds() - (15 - i) * 4);
+            chartLabels[i] = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            pollData();
+            drawChart();
+            setInterval(pollData, 3000);
+            
+            // Adjust canvas resolution on window resize
+            window.addEventListener('resize', drawChart);
+        });
+
+        function switchTab(tabId) {
+            currentTab = tabId;
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.content-section').forEach(sec => sec.classList.remove('active'));
+
+            const activeBtn = Array.from(document.querySelectorAll('.tab-btn')).find(btn => btn.getAttribute('onclick').includes(tabId));
+            if (activeBtn) activeBtn.classList.add('active');
+
+            const activeSection = document.getElementById(tabId);
+            if (activeSection) activeSection.classList.add('active');
+
+            pollData();
+            if (tabId === 'overview') {
+                setTimeout(drawChart, 50); // Redraw graph after displaying panel
+            }
+        }
+
+        function pollData() {
+            // 1. Stats endpoint
+            fetch('/api/horizon/stats')
+                .then(res => res.json())
+                .then(data => {
+                    stats = data;
+                    document.getElementById('statusDot').className = `pulse-dot ${data.status === 'active' ? 'active' : 'inactive'}`;
+                    document.getElementById('statusVal').innerText = data.status === 'active' ? 'Active' : 'Inactive';
+                    document.getElementById('totalJobsVal').innerText = data.total_jobs.toLocaleString();
+                    document.getElementById('throughputVal').innerText = data.throughput_per_minute;
+                    document.getElementById('failedJobsVal').innerText = data.failed_jobs;
+                    document.getElementById('failedJobsVal').style.color = data.failed_jobs > 0 ? 'var(--red)' : '#ffffff';
+
+                    // Update throughput data points
+                    const nowString = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    chartData.shift();
+                    chartData.push(data.throughput_per_minute);
+                    chartLabels.shift();
+                    chartLabels.push(nowString);
+                    if (currentTab === 'overview') drawChart();
+                })
+                .catch(() => {});
+
+            // 2. Supervisors
+            if (currentTab === 'supervisors' || currentTab === 'overview') {
+                fetch('/api/horizon/supervisors')
+                    .then(res => res.json())
+                    .then(data => {
+                        supervisors = data;
+                        document.getElementById('supervisorsBadge').innerText = `${Object.keys(data).filter(k => k !== 'master').length} Active`;
+                        populateSupervisorsTable();
+                    })
+                    .catch(() => {});
+            }
+
+            // 3. Workloads
+            if (currentTab === 'workloads') {
+                fetch('/api/horizon/workloads')
+                    .then(res => res.json())
+                    .then(data => {
+                        workloads = data;
+                        populateWorkloadsTable();
+                    })
+                    .catch(() => {});
+            }
+
+            // 4. Recent Jobs
+            if (currentTab === 'recent') {
+                fetch('/api/horizon/jobs/recent')
+                    .then(res => res.json())
+                    .then(data => {
+                        recentJobs = data;
+                        populateRecentJobsTable();
+                    })
+                    .catch(() => {});
+            }
+
+            // 5. Failed Jobs
+            if (currentTab === 'failed') {
+                fetch('/api/horizon/jobs/failed')
+                    .then(res => res.json())
+                    .then(data => {
+                        failedJobs = data;
+                        populateFailedJobsTable();
+                    })
+                    .catch(() => {});
+            }
+        }
+
+        // Table Populate Helpers
+        function populateSupervisorsTable() {
+            const tbody = document.getElementById('supervisorsTableBody');
+            tbody.innerHTML = '';
+
+            const keys = Object.keys(supervisors).filter(k => k !== 'master');
+            if (keys.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No active supervisors.</td></tr>`;
+                return;
+            }
+
+            keys.forEach(name => {
+                const sup = supervisors[name];
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight: 700; color: #ffffff;">${name}</td>
+                    <td class="mono">${sup.pid}</td>
+                    <td>${sup.connection}</td>
+                    <td style="color: var(--cyan);">${sup.queues || '-'}</td>
+                    <td>
+                        <span style="font-weight: 600; color: #ffffff;">${sup.active_workers}</span>
+                        <span style="color: var(--text-muted);">/</span>
+                        <span style="color: var(--text-muted);">${sup.target_workers}</span>
+                    </td>
+                    <td style="text-align: right; color: var(--text-muted);">${formatTime(sup.last_heartbeat)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateWorkloadsTable() {
+            const tbody = document.getElementById('workloadsTableBody');
+            tbody.innerHTML = '';
+
+            if (workloads.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 2rem;">No configured workloads found.</td></tr>`;
+                return;
+            }
+
+            workloads.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight: 700; color: #ffffff;">${item.queue}</td>
+                    <td>${item.connection}</td>
+                    <td style="text-align: right; font-weight: 700; color: var(--cyan);">${item.pending.toLocaleString()}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateRecentJobsTable() {
+            const tbody = document.getElementById('recentJobsTableBody');
+            tbody.innerHTML = '';
+
+            if (recentJobs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No processed jobs yet.</td></tr>`;
+                return;
+            }
+
+            recentJobs.forEach(job => {
+                const badgeClass = job.status === 'completed' ? 'badge-green' : (job.status === 'failed' ? 'badge-red' : 'badge-cyan');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="mono truncate" title="${job.class}">${shortClass(job.class)}</td>
+                    <td style="color: var(--text-muted);">${job.queue}</td>
+                    <td><span class="badge ${badgeClass}">${job.status}</span></td>
+                    <td>${job.duration ? parseFloat(job.duration).toFixed(3) + 's' : '-'}</td>
+                    <td style="text-align: right; color: var(--text-muted);">${formatTime(job.completed_at || job.started_at)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function populateFailedJobsTable() {
+            const tbody = document.getElementById('failedJobsTableBody');
+            tbody.innerHTML = '';
+
+            if (failedJobs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">Hooray! No failed jobs logged.</td></tr>`;
+                return;
+            }
+
+            failedJobs.forEach(job => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="mono truncate" title="${job.class}">${shortClass(job.class)}</td>
+                    <td style="color: var(--text-muted);">${job.queue}</td>
+                    <td style="color: var(--red); max-width: 300px;" class="truncate" title="${escapeHtml(job.exception)}">${escapeHtml(job.exception)}</td>
+                    <td style="color: var(--text-muted);">${formatTime(job.failed_at)}</td>
+                    <td style="text-align: right;">
+                        <div class="btn-group">
+                            <button class="btn-icon btn-cyan" onclick="inspectJob('${job.id}')" title="Inspect">
+                                <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                            </button>
+                            <button class="btn-icon btn-cyan" onclick="retryJob('${job.id}')" title="Retry">
+                                <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                            </button>
+                            <button class="btn-icon btn-red" onclick="deleteJob('${job.id}')" title="Delete">
+                                <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Job Inspector Modals
+        function inspectJob(id) {
+            activeFailedJob = failedJobs.find(j => j.id === id);
+            if (!activeFailedJob) return;
+
+            document.getElementById('modalJobClass').innerText = activeFailedJob.class;
+            document.getElementById('modalJobQueue').innerText = activeFailedJob.queue;
+            document.getElementById('modalJobFailedAt').innerText = formatTime(activeFailedJob.failed_at);
+
+            // Format JSON payload nicely
+            let payload = activeFailedJob.payload;
+            try {
+                const parsed = JSON.parse(payload);
+                payload = JSON.stringify(parsed, null, 2);
+            } catch (e) {}
+            document.getElementById('modalJobPayload').innerText = payload;
+            document.getElementById('modalJobTrace').innerText = activeFailedJob.exception + '\n\n' + activeFailedJob.stack_trace;
+
+            // Configure modal buttons
+            document.getElementById('modalRetryBtn').onclick = () => {
+                retryJob(activeFailedJob.id);
+                closeModal();
+            };
+            document.getElementById('modalDeleteBtn').onclick = () => {
+                deleteJob(activeFailedJob.id);
+                closeModal();
+            };
+
+            document.getElementById('exceptionModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('exceptionModal').classList.remove('active');
+            activeFailedJob = null;
+        }
+
+        // Retry & Delete Actions
+        function retryJob(id) {
+            fetch(`/api/horizon/jobs/failed/retry/${id}`, { method: 'POST' })
+                .then(res => {
+                    if (res.ok) {
+                        showToast('success', 'Job re-queued successfully!');
+                        pollData();
+                    } else {
+                        showToast('error', 'Failed to retry job.');
+                    }
+                })
+                .catch(() => showToast('error', 'Network error while retrying.'));
+        }
+
+        function deleteJob(id) {
+            if (!confirm('Are you sure you want to delete this failed job log?')) return;
+            fetch(`/api/horizon/jobs/failed/delete/${id}`, { method: 'POST' })
+                .then(res => {
+                    if (res.ok) {
+                        showToast('success', 'Failed job log deleted.');
+                        pollData();
+                    } else {
+                        showToast('error', 'Failed to delete job log.');
+                    }
+                })
+                .catch(() => showToast('error', 'Network error while deleting.'));
+        }
+
+        // Dynamic Native Canvas Line Chart Drawing
+        function drawChart() {
+            const canvas = document.getElementById('throughputChart');
+            if (!canvas) return;
+
+            // Handle high DPI retina screens
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+
+            const ctx = canvas.getContext('2d');
+            ctx.scale(dpr, dpr);
+
+            const width = rect.width;
+            const height = rect.height;
+            const paddingLeft = 40;
+            const paddingRight = 20;
+            const paddingTop = 20;
+            const paddingBottom = 30;
+
+            const chartW = width - paddingLeft - paddingRight;
+            const chartH = height - paddingTop - paddingBottom;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+
+            // Draw grid & labels
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+            ctx.lineWidth = 1;
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '10px sans-serif';
+
+            const gridLines = 4;
+            const maxVal = Math.max(...chartData, 5);
+
+            for (let i = 0; i <= gridLines; i++) {
+                const y = paddingTop + (chartH / gridLines) * i;
+                const value = Math.round(maxVal - (maxVal / gridLines) * i);
+                
+                // Grid line
+                ctx.beginPath();
+                ctx.moveTo(paddingLeft, y);
+                ctx.lineTo(width - paddingRight, y);
+                ctx.stroke();
+
+                // Y-axis label
+                ctx.fillText(value.toLocaleString(), 10, y + 3);
+            }
+
+            // Draw X-axis timestamps
+            ctx.textAlign = 'center';
+            const labelInterval = 3;
+            for (let i = 0; i < chartLabels.length; i++) {
+                if (i % labelInterval === 0 || i === chartLabels.length - 1) {
+                    const x = paddingLeft + (chartW / (chartData.length - 1)) * i;
+                    ctx.fillText(chartLabels[i], x, height - 10);
+                }
+            }
+
+            // Draw smooth throughput line
+            ctx.strokeStyle = '#22d3ee';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+
+            const points = [];
+            for (let i = 0; i < chartData.length; i++) {
+                const x = paddingLeft + (chartW / (chartData.length - 1)) * i;
+                const y = paddingTop + chartH - (chartData[i] / maxVal) * chartH;
+                points.push({ x, y });
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    // Curved line
+                    const prev = points[i - 1];
+                    const cpX1 = prev.x + (x - prev.x) / 2;
+                    const cpY1 = prev.y;
+                    const cpX2 = prev.x + (x - prev.x) / 2;
+                    const cpY2 = y;
+                    ctx.bezierCurveTo(cpX1, cpY1, cpX2, cpY2, x, y);
+                }
+            }
+            ctx.stroke();
+
+            // Draw gradient area under line
+            const grad = ctx.createLinearGradient(0, paddingTop, 0, paddingTop + chartH);
+            grad.addColorStop(0, 'rgba(34, 211, 238, 0.18)');
+            grad.addColorStop(1, 'rgba(34, 211, 238, 0.00)');
+            ctx.fillStyle = grad;
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, paddingTop + chartH);
+            ctx.lineTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) {
+                const prev = points[i - 1];
+                const x = points[i].x;
+                const y = points[i].y;
+                const cpX1 = prev.x + (x - prev.x) / 2;
+                const cpY1 = prev.y;
+                const cpX2 = prev.x + (x - prev.x) / 2;
+                const cpY2 = y;
+                ctx.bezierCurveTo(cpX1, cpY1, cpX2, cpY2, x, y);
+            }
+            ctx.lineTo(points[points.length - 1].x, paddingTop + chartH);
+            ctx.closePath();
+            ctx.fill();
+
+            // Draw nodes
+            ctx.fillStyle = '#22d3ee';
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#0b0f19';
+            for (let i = 0; i < points.length; i++) {
+                if (i % labelInterval === 0 || i === points.length - 1) {
+                    ctx.beginPath();
+                    ctx.arc(points[i].x, points[i].y, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            }
+        }
+
+        // Helper functions
+        function shortClass(className) {
+            if (!className) return '';
+            return className.substring(className.lastIndexOf('\\') + 1);
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(parseFloat(timestamp) * 1000);
+            return date.toLocaleString();
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function showToast(type, message) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+
+            const checkIcon = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+            const errorIcon = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`;
+
+            toast.innerHTML = `
+                ${type === 'success' ? checkIcon : errorIcon}
+                <span>${message}</span>
+            `;
+
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse forwards';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
