@@ -147,6 +147,25 @@ final class MetricsCollectorTest extends TestCase
         $record = $this->storage->flushes[0]['records'][0];
         self::assertSame(JobRecord::STATUS_RELEASED, $record->status);
         self::assertNull($record->retryPayload, 'messenger retries released jobs itself');
+
+        // a released attempt is not a final failure: the "failed" metric must
+        // stay consistent with the failed-jobs list on the dashboard
+        $bucket = array_values($this->storage->flushes[0]['queueBuckets'])[0];
+        self::assertSame(0, $bucket['failed']);
+        self::assertSame(1, $bucket['jobs']);
+    }
+
+    public function testFinalFailureCountsInFailedBucket(): void
+    {
+        $collector = $this->collector();
+        $envelope = new Envelope(new TaggedMessage());
+
+        $collector->jobReceived($envelope, 'async');
+        $collector->jobFailed($envelope, new \RuntimeException('fatal'), willRetry: false);
+        $collector->workerRunning(idle: true);
+
+        $bucket = array_values($this->storage->flushes[0]['queueBuckets'])[0];
+        self::assertSame(1, $bucket['failed']);
     }
 
     public function testSamplingSkipsRecordsButBucketsCountEveryJob(): void

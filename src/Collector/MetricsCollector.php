@@ -150,20 +150,25 @@ final class MetricsCollector
         $peakMemory = memory_get_peak_usage(true);
         $memoryUsed = max(0, memory_get_usage(true) - $current['mem_start']);
         $finishedAt = microtime(true);
-        $failed = $status !== JobRecord::STATUS_COMPLETED;
 
-        if ($failed) {
+        // Only jobs that exhausted their retries count as "failed" in metrics
+        // (Horizon semantics). A released attempt comes back and is counted
+        // again on its final outcome, so it increments neither counter here.
+        $isFinalFailure = $status === JobRecord::STATUS_FAILED;
+
+        if ($isFinalFailure) {
             ++$this->failedCount;
-        } else {
+        } elseif ($status === JobRecord::STATUS_COMPLETED) {
             ++$this->processedCount;
         }
 
         $minute = gmdate('YmdHi', (int) $finishedAt);
-        $this->bumpBucket($this->queueBuckets, $current['queue'] . '|' . $minute, $failed, $durationMs, $peakMemory, $current['wait_ms']);
-        $this->bumpBucket($this->classBuckets, $current['class'] . '|' . $minute, $failed, $durationMs, $peakMemory, $current['wait_ms']);
+        $this->bumpBucket($this->queueBuckets, $current['queue'] . '|' . $minute, $isFinalFailure, $durationMs, $peakMemory, $current['wait_ms']);
+        $this->bumpBucket($this->classBuckets, $current['class'] . '|' . $minute, $isFinalFailure, $durationMs, $peakMemory, $current['wait_ms']);
 
-        // Failures are always recorded in detail; completed jobs honour the sampling rate.
-        if ($failed || $this->sampling >= 1.0 || mt_rand() / mt_getrandmax() < $this->sampling) {
+        // Failed and released attempts are always recorded in detail;
+        // completed jobs honour the sampling rate.
+        if ($status !== JobRecord::STATUS_COMPLETED || $this->sampling >= 1.0 || mt_rand() / mt_getrandmax() < $this->sampling) {
             $message = $envelope->getMessage();
 
             $payload = null;
