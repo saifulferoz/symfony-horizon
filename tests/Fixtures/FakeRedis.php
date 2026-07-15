@@ -171,6 +171,21 @@ final class FakeRedis
         return $this->strings[$key] ?? null;
     }
 
+    public function set(string $key, string $value): bool
+    {
+        $this->strings[$key] = $value;
+
+        return true;
+    }
+
+    /** @return list<string> */
+    public function keys(string $pattern): array
+    {
+        $all = [...array_keys($this->strings), ...array_keys($this->hashes), ...array_keys($this->sets), ...array_keys($this->zsets), ...array_keys($this->lists)];
+
+        return array_values(array_unique(array_filter($all, static fn (string $key): bool => fnmatch($pattern, $key))));
+    }
+
     public function incrby(string $key, int $by): int
     {
         $value = (int) ($this->strings[$key] ?? 0) + $by;

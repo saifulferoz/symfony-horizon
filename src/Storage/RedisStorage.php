@@ -19,6 +19,13 @@ final class RedisStorage implements StorageInterface
     private const HEARTBEAT_TTL = 15;
     private const BUCKET_FIELDS_INT = ['jobs', 'failed', 'memory_sum', 'wait_count'];
     private const BUCKET_FIELDS_FLOAT = ['duration_sum', 'wait_sum'];
+    /**
+     * Bump when the key layout changes incompatibly. Stale keys from another
+     * layout (e.g. lists where zsets are expected) make writes fail with
+     * WRONGTYPE silently inside pipelines, so on mismatch the prefix is wiped
+     * once and re-marked.
+     */
+    private const SCHEMA_VERSION = '1';
 
     private ?object $client = null;
     private bool $isPhpRedis = false;
@@ -43,9 +50,34 @@ final class RedisStorage implements StorageInterface
         if ($this->client === null) {
             $this->client = $this->redis instanceof \Closure ? ($this->redis)() : $this->redis;
             $this->isPhpRedis = \extension_loaded('redis') && $this->client instanceof \Redis;
+            $this->ensureSchema();
         }
 
         return $this->client;
+    }
+
+    /**
+     * Once per process: wipe keys left behind by an incompatible bundle
+     * version. Runs before the first real command, so a fresh install only
+     * pays one GET.
+     */
+    private function ensureSchema(): void
+    {
+        $marker = $this->prefix . 'schema';
+        if ($this->client->get($marker) === self::SCHEMA_VERSION) {
+            return;
+        }
+
+        $keys = $this->client->keys($this->prefix . '*');
+        foreach (array_chunk(\is_array($keys) ? $keys : [], 500) as $chunk) {
+            $this->pipeline(static function (object $p) use ($chunk): void {
+                foreach ($chunk as $key) {
+                    $p->del($key);
+                }
+            });
+        }
+
+        $this->client->set($marker, self::SCHEMA_VERSION);
     }
 
     public function flush(array $records, array $queueBuckets, array $classBuckets): void

@@ -196,6 +196,27 @@ final class RedisStorageTest extends TestCase
         self::assertNull($this->storage->popCommand());
     }
 
+    public function testStaleKeysFromOldSchemaAreWipedOnce(): void
+    {
+        // the pre-rewrite bundle stored these as lists; ZADD against them fails
+        $this->redis->lists['horizon:jobs:recent'] = ['old1', 'old2'];
+        $this->redis->lists['horizon:jobs:failed'] = ['old3'];
+        $this->redis->strings['horizon:stats:total_jobs'] = '999';
+        $this->redis->strings['unrelated:key'] = 'kept';
+
+        $this->storage->flush([$this->record('fresh')], $this->bucket('async'), []);
+
+        self::assertArrayNotHasKey('horizon:jobs:recent', $this->redis->lists, 'stale list must be wiped');
+        self::assertArrayNotHasKey('horizon:stats:total_jobs', $this->redis->strings);
+        self::assertSame('kept', $this->redis->strings['unrelated:key'], 'only the horizon prefix is wiped');
+        self::assertSame('1', $this->redis->strings['horizon:schema']);
+        self::assertSame(1, $this->storage->getRecentJobs()['total'], 'new-format writes work after the wipe');
+
+        // second storage instance against the same data must not wipe again
+        $again = new RedisStorage($this->redis, 'horizon:');
+        self::assertSame(1, $again->getRecentJobs()['total']);
+    }
+
     public function testSnapshotRollup(): void
     {
         $this->storage->flush(
