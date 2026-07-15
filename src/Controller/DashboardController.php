@@ -1,44 +1,30 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Saifulferoz\SymfonyHorizon\Controller;
 
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\Routing\Attribute\Route;
-use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
-use Symfony\Component\Security\Core\Exception\AccessDeniedException;
 
-class DashboardController
+/**
+ * Serves the self-contained dashboard page (no build step, no CDN assets).
+ */
+final class DashboardController
 {
-    private ?AuthorizationCheckerInterface $authorizationChecker;
-    private ?string $role;
-
-    public function __construct(
-        ?AuthorizationCheckerInterface $authorizationChecker = null,
-        ?string $role = null
-    ) {
-        $this->authorizationChecker = $authorizationChecker;
-        $this->role = $role;
-    }
-
-    #[Route('/horizon', name: 'symfony_horizon_dashboard', methods: ['GET'])]
-    public function index(): Response
+    public function __invoke(Request $request): Response
     {
-        $this->denyAccessUnlessGranted();
-
-        $htmlPath = dirname(__DIR__) . '/Resources/views/dashboard.html';
-        $html = file_exists($htmlPath) ? file_get_contents($htmlPath) : '<h1>Symfony Horizon Dashboard</h1>';
-
-        return new Response($html, 200, ['Content-Type' => 'text/html']);
-    }
-
-    private function denyAccessUnlessGranted(): void
-    {
-        if (!$this->authorizationChecker || !$this->role) {
-            return;
+        $html = file_get_contents(\dirname(__DIR__, 2) . '/templates/dashboard.html');
+        if ($html === false) {
+            return new Response('Dashboard template missing.', 500);
         }
 
-        if (!$this->authorizationChecker->isGranted($this->role)) {
-            throw new AccessDeniedException(sprintf('Access Denied. Required role: %s', $this->role));
-        }
+        $basePath = rtrim($request->getBaseUrl() . $request->getPathInfo(), '/');
+
+        return new Response(
+            str_replace('__BASE_PATH__', htmlspecialchars($basePath, \ENT_QUOTES), $html),
+            200,
+            ['Content-Type' => 'text/html; charset=UTF-8', 'Cache-Control' => 'no-store'],
+        );
     }
 }

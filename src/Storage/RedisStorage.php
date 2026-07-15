@@ -1,218 +1,481 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Saifulferoz\SymfonyHorizon\Storage;
 
-class RedisStorage implements StorageInterface
+use Saifulferoz\SymfonyHorizon\Collector\JobRecord;
+
+/**
+ * Redis-backed storage. Works with phpredis (\Redis) and Predis, plus any
+ * duck-typed client exposing pipeline(callable): array (used by tests).
+ *
+ * All hot-path writes go through a single pipeline per batch. Every key is
+ * either trimmed on write (ZREMRANGEBYSCORE) or carries a TTL, so Redis usage
+ * is bounded regardless of job volume.
+ */
+final class RedisStorage implements StorageInterface
 {
-    private object $redis;
-    private string $prefix;
+    private const HEARTBEAT_TTL = 15;
+    private const BUCKET_FIELDS_INT = ['jobs', 'failed', 'memory_sum', 'wait_count'];
+    private const BUCKET_FIELDS_FLOAT = ['duration_sum', 'wait_sum'];
 
-    public function __construct(object $redis, string $prefix = 'horizon:')
-    {
-        $this->redis = $redis;
-        $this->prefix = $prefix;
+    private ?object $client = null;
+    private bool $isPhpRedis = false;
+    /** @var array{recent: int, failed: int, metrics: int, snapshots: int} */
+    private readonly array $trim;
+
+    /**
+     * @param object $redis a client instance, or a \Closure returning one (so
+     *                      no connection is opened until storage is first used)
+     * @param array{recent?: int, failed?: int, metrics?: int, snapshots?: int} $trim minutes
+     */
+    public function __construct(
+        private readonly object $redis,
+        private readonly string $prefix = 'horizon:',
+        array $trim = [],
+    ) {
+        $this->trim = $trim + ['recent' => 60, 'failed' => 10080, 'metrics' => 1440, 'snapshots' => 10080];
     }
 
-    public function recordSupervisorHeartbeat(string $name, array $meta): void
+    private function client(): object
     {
-        $key = $this->prefix . 'supervisor:' . $name;
-        $this->hMSet($key, $meta);
-        $this->redis->expire($key, 60);
-
-        $this->redis->sadd($this->prefix . 'supervisors', $name);
-    }
-
-    public function getSupervisors(): array
-    {
-        $names = $this->redis->smembers($this->prefix . 'supervisors');
-        $supervisors = [];
-
-        foreach ($names as $name) {
-            $key = $this->prefix . 'supervisor:' . $name;
-            $meta = $this->redis->hgetall($key);
-            if ($meta) {
-                $supervisors[$name] = $meta;
-            } else {
-                $this->redis->srem($this->prefix . 'supervisors', $name);
-            }
+        if ($this->client === null) {
+            $this->client = $this->redis instanceof \Closure ? ($this->redis)() : $this->redis;
+            $this->isPhpRedis = \extension_loaded('redis') && $this->client instanceof \Redis;
         }
 
-        return $supervisors;
+        return $this->client;
     }
 
-    public function removeSupervisor(string $name): void
+    public function flush(array $records, array $queueBuckets, array $classBuckets): void
     {
-        $this->redis->srem($this->prefix . 'supervisors', $name);
-        $this->redis->del($this->prefix . 'supervisor:' . $name);
+        if ($records === [] && $queueBuckets === []) {
+            return;
+        }
+
+        $now = microtime(true);
+        $completedTtl = $this->trim['recent'] * 60;
+        $failedTtl = $this->trim['failed'] * 60;
+        $metricsTtl = $this->trim['metrics'] * 60;
+
+        $jobsDelta = 0;
+        $failedDelta = 0;
+        $allBuckets = [];
+        foreach ($queueBuckets as $key => $fields) {
+            $minute = substr($key, strrpos($key, '|') + 1);
+            foreach ($fields as $field => $value) {
+                $allBuckets[$minute][$field] = ($allBuckets[$minute][$field] ?? 0) + $value;
+            }
+            $jobsDelta += (int) $fields['jobs'];
+            $failedDelta += (int) $fields['failed'];
+        }
+
+        $this->pipeline(function (object $p) use ($records, $queueBuckets, $classBuckets, $allBuckets, $now, $completedTtl, $failedTtl, $metricsTtl, $jobsDelta, $failedDelta): void {
+            foreach ($records as $record) {
+                $key = $this->prefix . 'job:' . $record->id;
+                $p->hmset($key, $record->toRow());
+
+                if ($record->status === JobRecord::STATUS_FAILED) {
+                    $p->expire($key, $failedTtl);
+                    $this->zAdd($p, $this->prefix . 'jobs:failed', $record->finishedAt, $record->id);
+                } else {
+                    $p->expire($key, $completedTtl);
+                }
+                $this->zAdd($p, $this->prefix . 'jobs:recent', $record->finishedAt, $record->id);
+            }
+
+            $this->writeBuckets($p, 'q', $queueBuckets, $metricsTtl, $this->prefix . 'queues');
+            $this->writeBuckets($p, 'c', $classBuckets, $metricsTtl, $this->prefix . 'classes');
+            foreach ($allBuckets as $minute => $fields) {
+                $this->incrementBucket($p, $this->prefix . 'metrics:all:' . $minute, $fields, $metricsTtl);
+            }
+
+            if ($jobsDelta > 0) {
+                $p->incrby($this->prefix . 'stats:jobs', $jobsDelta);
+            }
+            if ($failedDelta > 0) {
+                $p->incrby($this->prefix . 'stats:failed', $failedDelta);
+            }
+
+            // Trim on every flush: O(log N + removed), negligible inside the pipeline.
+            $p->zremrangebyscore($this->prefix . 'jobs:recent', '-inf', (string) ($now - $completedTtl));
+            $p->zremrangebyscore($this->prefix . 'jobs:failed', '-inf', (string) ($now - $failedTtl));
+        });
     }
 
-    public function recordWorkerHeartbeat(string $workerId, array $meta): void
+    public function heartbeatWorker(string $workerId, array $meta): void
     {
         $key = $this->prefix . 'worker:' . $workerId;
-        $this->hMSet($key, $meta);
-        $this->redis->expire($key, 60);
-
-        $this->redis->sadd($this->prefix . 'workers', $workerId);
-    }
-
-    public function getWorkers(): array
-    {
-        $ids = $this->redis->smembers($this->prefix . 'workers');
-        $workers = [];
-
-        foreach ($ids as $id) {
-            $key = $this->prefix . 'worker:' . $id;
-            $meta = $this->redis->hgetall($key);
-            if ($meta) {
-                $workers[$id] = $meta;
-            } else {
-                $this->redis->srem($this->prefix . 'workers', $id);
-            }
-        }
-
-        return $workers;
+        $this->pipeline(function (object $p) use ($key, $workerId, $meta): void {
+            $p->hmset($key, $meta);
+            $p->expire($key, self::HEARTBEAT_TTL);
+            $p->sadd($this->prefix . 'workers', $workerId);
+        });
     }
 
     public function removeWorker(string $workerId): void
     {
-        $this->redis->srem($this->prefix . 'workers', $workerId);
-        $this->redis->del($this->prefix . 'worker:' . $workerId);
+        $this->pipeline(function (object $p) use ($workerId): void {
+            $p->srem($this->prefix . 'workers', $workerId);
+            $p->del($this->prefix . 'worker:' . $workerId);
+        });
     }
 
-    public function recordJobReceived(string $jobId, array $jobData): void
+    public function getWorkers(): array
     {
-        $key = $this->prefix . 'job:' . $jobId;
-        $this->hMSet($key, $jobData);
-        $this->redis->expire($key, 86400); // 24 hours retention for jobs
-
-        // Add to recent jobs list
-        $this->redis->lpush($this->prefix . 'jobs:recent', $jobId);
-        $this->redis->ltrim($this->prefix . 'jobs:recent', 0, 999); // Cap at 1000 items
-
-        $this->redis->incr($this->prefix . 'stats:total_jobs');
+        return $this->readHeartbeats('workers', 'worker:');
     }
 
-    public function recordJobHandled(string $jobId, float $duration): void
+    public function heartbeatSupervisor(string $name, array $meta): void
     {
-        $key = $this->prefix . 'job:' . $jobId;
-        $this->hMSet($key, [
-            'status' => 'completed',
-            'duration' => (string) $duration,
-            'completed_at' => (string) microtime(true),
-        ]);
-
-        $timestamp = time();
-        $this->zAdd($this->prefix . 'stats:throughput', $timestamp, $jobId);
-        $this->zAdd($this->prefix . 'stats:runtimes', $duration, $jobId);
-
-        // Keep stats only for last 24 hours
-        $cutoff = $timestamp - 86400;
-        if (method_exists($this->redis, 'zremrangebyscore')) {
-            $this->redis->zremrangebyscore($this->prefix . 'stats:throughput', '-inf', (string) $cutoff);
-        } else {
-            $this->redis->zRemRangeByScore($this->prefix . 'stats:throughput', '-inf', (string) $cutoff);
-        }
+        $key = $this->prefix . 'supervisor:' . $name;
+        $this->pipeline(function (object $p) use ($key, $name, $meta): void {
+            $p->hmset($key, $meta);
+            $p->expire($key, self::HEARTBEAT_TTL);
+            $p->sadd($this->prefix . 'supervisors', $name);
+        });
     }
 
-    public function recordJobFailed(string $jobId, string $errorMessage, string $stackTrace, array $jobData = []): void
+    public function removeSupervisor(string $name): void
     {
-        $key = $this->prefix . 'job:' . $jobId;
-        $this->hMSet($key, array_merge($jobData, [
-            'status' => 'failed',
-            'failed_at' => (string) microtime(true),
-            'exception' => $errorMessage,
-            'stack_trace' => $stackTrace,
-        ]));
-
-        $this->redis->lpush($this->prefix . 'jobs:failed', $jobId);
-        $this->redis->ltrim($this->prefix . 'jobs:failed', 0, 999);
-
-        $this->redis->incr($this->prefix . 'stats:failed_jobs');
+        $this->pipeline(function (object $p) use ($name): void {
+            $p->srem($this->prefix . 'supervisors', $name);
+            $p->del($this->prefix . 'supervisor:' . $name);
+        });
     }
 
-    public function getJobDetails(string $jobId): ?array
+    public function getSupervisors(): array
     {
-        $data = $this->redis->hgetall($this->prefix . 'job:' . $jobId);
-        return $data ?: null;
+        return $this->readHeartbeats('supervisors', 'supervisor:');
+    }
+
+    public function getJob(string $id): ?array
+    {
+        $row = $this->client()->hgetall($this->prefix . 'job:' . $id);
+
+        return \is_array($row) && $row !== [] ? $row : null;
     }
 
     public function getRecentJobs(int $limit = 50, int $offset = 0): array
     {
-        $end = $offset + $limit - 1;
-        $ids = $this->redis->lrange($this->prefix . 'jobs:recent', $offset, $end) ?: [];
-        $jobs = [];
-
-        foreach ($ids as $id) {
-            $job = $this->getJobDetails($id);
-            if ($job) {
-                $jobs[] = $job;
-            }
-        }
-
-        return $jobs;
+        return $this->pageJobs('jobs:recent', $limit, $offset);
     }
 
     public function getFailedJobs(int $limit = 50, int $offset = 0): array
     {
-        $end = $offset + $limit - 1;
-        $ids = $this->redis->lrange($this->prefix . 'jobs:failed', $offset, $end) ?: [];
-        $jobs = [];
-
-        foreach ($ids as $id) {
-            $job = $this->getJobDetails($id);
-            if ($job) {
-                $jobs[] = $job;
-            }
-        }
-
-        return $jobs;
+        return $this->pageJobs('jobs:failed', $limit, $offset);
     }
 
-    public function deleteFailedJob(string $jobId): void
+    public function deleteFailedJob(string $id): void
     {
-        // Remove from list
-        $this->redis->lrem($this->prefix . 'jobs:failed', 0, $jobId);
-        // Delete job payload
-        $this->redis->del($this->prefix . 'job:' . $jobId);
+        $this->pipeline(function (object $p) use ($id): void {
+            $p->zrem($this->prefix . 'jobs:failed', $id);
+            $p->zrem($this->prefix . 'jobs:recent', $id);
+            $p->del($this->prefix . 'job:' . $id);
+        });
     }
 
-    public function getDashboardMetrics(): array
+    public function markJobRetried(string $id): void
     {
-        $totalJobs = (int) ($this->redis->get($this->prefix . 'stats:total_jobs') ?: 0);
-        $failedJobs = (int) ($this->redis->get($this->prefix . 'stats:failed_jobs') ?: 0);
-        
-        // Calculate throughput in last minute
-        $now = time();
-        $oneMinuteAgo = $now - 60;
-        
-        if (method_exists($this->redis, 'zcount')) {
-            $throughput = (int) ($this->redis->zcount($this->prefix . 'stats:throughput', (string) $oneMinuteAgo, (string) $now) ?: 0);
-        } else {
-            $throughput = (int) ($this->redis->zCount($this->prefix . 'stats:throughput', (string) $oneMinuteAgo, (string) $now) ?: 0);
-        }
+        $this->pipeline(function (object $p) use ($id): void {
+            $p->hmset($this->prefix . 'job:' . $id, [
+                'status' => 'retried',
+                'retried_at' => (string) microtime(true),
+            ]);
+            $p->zrem($this->prefix . 'jobs:failed', $id);
+        });
+    }
+
+    public function getCounters(): array
+    {
+        $results = $this->pipelineRead(function (object $p): void {
+            $p->get($this->prefix . 'stats:jobs');
+            $p->get($this->prefix . 'stats:failed');
+            $p->zcard($this->prefix . 'jobs:recent');
+            $p->zcard($this->prefix . 'jobs:failed');
+        });
 
         return [
-            'total_jobs' => $totalJobs,
-            'failed_jobs' => $failedJobs,
-            'throughput_per_minute' => $throughput,
+            'jobs_total' => (int) ($results[0] ?? 0),
+            'failed_total' => (int) ($results[1] ?? 0),
+            'recent_count' => (int) ($results[2] ?? 0),
+            'failed_count' => (int) ($results[3] ?? 0),
         ];
     }
 
-    private function hMSet(string $key, array $association): void
+    public function getQueues(): array
     {
-        if (method_exists($this->redis, 'hMSet')) {
-            $this->redis->hMSet($key, $association);
-        } else {
-            $this->redis->hmset($key, $association);
+        $members = $this->client()->smembers($this->prefix . 'queues');
+        sort($members);
+
+        return array_values($members);
+    }
+
+    public function getClasses(): array
+    {
+        $members = $this->client()->smembers($this->prefix . 'classes');
+        sort($members);
+
+        return array_values($members);
+    }
+
+    public function getMetrics(string $type, string $name, int $minutes = 60): array
+    {
+        $minutes = max(1, min($minutes, $this->trim['metrics']));
+        $nowMinute = (int) (time() / 60);
+        $keyBase = $type === 'all'
+            ? $this->prefix . 'metrics:all:'
+            : $this->prefix . 'metrics:' . $type . ':' . $name . ':';
+
+        $stamps = [];
+        for ($i = $minutes - 1; $i >= 0; --$i) {
+            $stamps[] = ($nowMinute - $i) * 60;
+        }
+
+        $results = $this->pipelineRead(function (object $p) use ($keyBase, $stamps): void {
+            foreach ($stamps as $ts) {
+                $p->hgetall($keyBase . gmdate('YmdHi', $ts));
+            }
+        });
+
+        $series = [];
+        foreach ($stamps as $i => $ts) {
+            $bucket = \is_array($results[$i] ?? null) ? $results[$i] : [];
+            $jobs = (int) ($bucket['jobs'] ?? 0);
+            $waitCount = (int) ($bucket['wait_count'] ?? 0);
+
+            $series[] = [
+                'minute' => gmdate('H:i', $ts),
+                'ts' => $ts,
+                'jobs' => $jobs,
+                'failed' => (int) ($bucket['failed'] ?? 0),
+                'avg_duration_ms' => $jobs > 0 ? round((float) ($bucket['duration_sum'] ?? 0) / $jobs, 2) : 0.0,
+                'avg_memory' => $jobs > 0 ? (int) ((float) ($bucket['memory_sum'] ?? 0) / $jobs) : 0,
+                'avg_wait_ms' => $waitCount > 0 ? round((float) ($bucket['wait_sum'] ?? 0) / $waitCount, 2) : 0.0,
+            ];
+        }
+
+        return $series;
+    }
+
+    public function storeSnapshots(): void
+    {
+        $now = time();
+        $cutoff = $now - $this->trim['snapshots'] * 60;
+
+        foreach (['q' => $this->getQueues(), 'c' => $this->getClasses()] as $type => $names) {
+            foreach ($names as $name) {
+                $series = $this->getMetrics($type, $name, 60);
+
+                $jobs = 0;
+                $failed = 0;
+                $durationWeighted = 0.0;
+                $memoryWeighted = 0.0;
+                $waitWeighted = 0.0;
+                foreach ($series as $point) {
+                    $jobs += $point['jobs'];
+                    $failed += $point['failed'];
+                    $durationWeighted += $point['avg_duration_ms'] * $point['jobs'];
+                    $memoryWeighted += $point['avg_memory'] * $point['jobs'];
+                    $waitWeighted += $point['avg_wait_ms'] * $point['jobs'];
+                }
+
+                $snapshot = json_encode([
+                    't' => $now,
+                    'jobs' => $jobs,
+                    'failed' => $failed,
+                    'avg_duration_ms' => $jobs > 0 ? round($durationWeighted / $jobs, 2) : 0,
+                    'avg_memory' => $jobs > 0 ? (int) ($memoryWeighted / $jobs) : 0,
+                    'avg_wait_ms' => $jobs > 0 ? round($waitWeighted / $jobs, 2) : 0,
+                ]);
+
+                $key = $this->prefix . 'snapshot:' . $type . ':' . $name;
+                $this->pipeline(function (object $p) use ($key, $now, $snapshot, $cutoff): void {
+                    $this->zAdd($p, $key, $now, (string) $snapshot);
+                    $p->zremrangebyscore($key, '-inf', (string) $cutoff);
+                });
+            }
         }
     }
 
-    private function zAdd(string $key, float $score, string $value): void
+    public function getSnapshots(string $type, string $name, int $limit = 168): array
     {
-        if (method_exists($this->redis, 'zAdd')) {
-            $this->redis->zAdd($key, $score, $value);
+        $members = $this->client()->zrevrange($this->prefix . 'snapshot:' . $type . ':' . $name, 0, $limit - 1);
+
+        $snapshots = [];
+        foreach (\is_array($members) ? $members : [] as $member) {
+            $decoded = json_decode((string) $member, true);
+            if (\is_array($decoded)) {
+                $snapshots[] = $decoded;
+            }
+        }
+
+        return array_reverse($snapshots);
+    }
+
+    public function pushCommand(string $command): void
+    {
+        $this->client()->rpush($this->prefix . 'commands', $command);
+    }
+
+    public function popCommand(): ?string
+    {
+        $command = $this->client()->lpop($this->prefix . 'commands');
+
+        return \is_string($command) && $command !== '' ? $command : null;
+    }
+
+    // --- internals -------------------------------------------------------
+
+    /**
+     * @param array<string, array<string, int|float>> $buckets keyed "name|YmdHi"
+     */
+    private function writeBuckets(object $p, string $type, array $buckets, int $ttl, string $namesSetKey): void
+    {
+        foreach ($buckets as $bucketKey => $fields) {
+            $pos = strrpos($bucketKey, '|');
+            $name = substr($bucketKey, 0, $pos);
+            $minute = substr($bucketKey, $pos + 1);
+
+            $this->incrementBucket($p, $this->prefix . 'metrics:' . $type . ':' . $name . ':' . $minute, $fields, $ttl);
+            $p->sadd($namesSetKey, $name);
+        }
+    }
+
+    /**
+     * @param array<string, int|float> $fields
+     */
+    private function incrementBucket(object $p, string $key, array $fields, int $ttl): void
+    {
+        foreach (self::BUCKET_FIELDS_INT as $field) {
+            if (($fields[$field] ?? 0) > 0) {
+                $p->hincrby($key, $field, (int) $fields[$field]);
+            }
+        }
+        foreach (self::BUCKET_FIELDS_FLOAT as $field) {
+            if (($fields[$field] ?? 0) > 0) {
+                $p->hincrbyfloat($key, $field, round((float) $fields[$field], 3));
+            }
+        }
+        $p->expire($key, $ttl);
+    }
+
+    /**
+     * @return array{total: int, jobs: list<array<string, string>>}
+     */
+    private function pageJobs(string $zsetSuffix, int $limit, int $offset): array
+    {
+        $zset = $this->prefix . $zsetSuffix;
+        $limit = max(1, min($limit, 200));
+
+        $ids = $this->client()->zrevrange($zset, $offset, $offset + $limit - 1);
+        $ids = \is_array($ids) ? $ids : [];
+        $total = (int) $this->client()->zcard($zset);
+
+        if ($ids === []) {
+            return ['total' => $total, 'jobs' => []];
+        }
+
+        $results = $this->pipelineRead(function (object $p) use ($ids): void {
+            foreach ($ids as $id) {
+                $p->hgetall($this->prefix . 'job:' . $id);
+            }
+        });
+
+        $jobs = [];
+        foreach ($ids as $i => $id) {
+            $row = $results[$i] ?? null;
+            if (\is_array($row) && $row !== []) {
+                $row['id'] ??= (string) $id;
+                $jobs[] = $row;
+            }
+        }
+
+        return ['total' => $total, 'jobs' => $jobs];
+    }
+
+    /**
+     * @return array<string, array<string, string>>
+     */
+    private function readHeartbeats(string $setSuffix, string $keySuffix): array
+    {
+        $ids = $this->client()->smembers($this->prefix . $setSuffix);
+        $ids = \is_array($ids) ? $ids : [];
+        if ($ids === []) {
+            return [];
+        }
+
+        $results = $this->pipelineRead(function (object $p) use ($ids, $keySuffix): void {
+            foreach ($ids as $id) {
+                $p->hgetall($this->prefix . $keySuffix . $id);
+            }
+        });
+
+        $alive = [];
+        $stale = [];
+        foreach ($ids as $i => $id) {
+            $meta = $results[$i] ?? null;
+            if (\is_array($meta) && $meta !== []) {
+                $alive[(string) $id] = $meta;
+            } else {
+                $stale[] = $id; // heartbeat TTL expired: process died without cleanup
+            }
+        }
+
+        if ($stale !== []) {
+            $this->pipeline(function (object $p) use ($stale, $setSuffix): void {
+                foreach ($stale as $id) {
+                    $p->srem($this->prefix . $setSuffix, $id);
+                }
+            });
+        }
+
+        ksort($alive);
+
+        return $alive;
+    }
+
+    private function pipeline(callable $commands): void
+    {
+        $this->pipelineRead($commands);
+    }
+
+    /**
+     * Runs $commands against a pipelined connection and returns the per-command replies.
+     *
+     * @return list<mixed>
+     */
+    private function pipelineRead(callable $commands): array
+    {
+        $client = $this->client(); // resolve first: this also decides $isPhpRedis
+
+        if ($this->isPhpRedis) {
+            $pipe = $client->multi(\Redis::PIPELINE);
+            $commands($pipe);
+            $replies = $pipe->exec();
+
+            return \is_array($replies) ? $replies : [];
+        }
+
+        if (method_exists($client, 'pipeline')) {
+            $replies = $client->pipeline(static function (object $pipe) use ($commands): void {
+                $commands($pipe);
+            });
+
+            return \is_array($replies) ? array_values($replies) : [];
+        }
+
+        throw new \LogicException(sprintf('Unsupported Redis client "%s": expected phpredis, Predis, or a client exposing pipeline(callable).', $client::class));
+    }
+
+    private function zAdd(object $connection, string $key, float $score, string $member): void
+    {
+        if ($this->isPhpRedis) {
+            $connection->zadd($key, $score, $member);
         } else {
-            $this->redis->zadd($key, $score, $value);
+            // Predis signature
+            $connection->zadd($key, [$member => $score]);
         }
     }
 }

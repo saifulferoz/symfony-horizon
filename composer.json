@@ -1,8 +1,9 @@
 {
     "name": "saifulferoz/symfony-horizon",
-    "description": "Laravel Horizon style dashboard and queue worker monitoring for Symfony Messenger",
+    "description": "Laravel Horizon style dashboard, supervisor and per-job metrics (runtime, memory) for Symfony Messenger",
     "type": "symfony-bundle",
     "license": "MIT",
+    "keywords": ["symfony", "messenger", "horizon", "queue", "worker", "dashboard", "monitoring", "metrics"],
     "authors": [
         {
             "name": "Saiful Islam Feroz",
@@ -10,14 +11,19 @@
         }
     ],
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.2",
+        "symfony/console": "^6.4 || ^7.0 || ^8.0",
         "symfony/framework-bundle": "^6.4 || ^7.0 || ^8.0",
         "symfony/messenger": "^6.4 || ^7.0 || ^8.0",
-        "symfony/process": "^6.4 || ^7.0 || ^8.0",
-        "symfony/cache": "^6.4 || ^7.0 || ^8.0"
+        "symfony/process": "^6.4 || ^7.0 || ^8.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.0 || ^11.0"
+        "phpunit/phpunit": "^10.5 || ^11.0 || ^12.0"
+    },
+    "suggest": {
+        "ext-pcntl": "For graceful shutdown of the horizon supervisor on SIGTERM/SIGINT",
+        "ext-redis": "Fastest Redis client for metrics storage (phpredis)",
+        "predis/predis": "Pure PHP Redis client, used when ext-redis is not available"
     },
     "autoload": {
         "psr-4": {
@@ -31,5 +37,6 @@
     },
     "config": {
         "sort-packages": true
-    }
+    },
+    "minimum-stability": "stable"
 }

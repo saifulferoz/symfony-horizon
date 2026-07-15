@@ -1,152 +1,121 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Saifulferoz\SymfonyHorizon\Supervisor;
 
-use Psr\Container\ContainerInterface;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
-use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
-use Symfony\Component\Process\Process;
 
-class Supervisor
+/**
+ * One configured supervisor block: keeps its worker pool at the right size,
+ * autoscales on queue depth, and reports a heartbeat for the dashboard.
+ */
+final class Supervisor
 {
-    private string $name;
-    private array $config;
-    private StorageInterface $storage;
-    private ?ContainerInterface $receiverLocator;
-    private Autoscaler $autoscaler;
+    private bool $paused = false;
+    private float $lastScaleAt = 0.0;
+    private float $lastHeartbeatAt = 0.0;
+    /** @var array<string, int|null> */
+    private array $lastPending = [];
 
-    /** @var Process[] */
-    private array $processes = [];
-    private string $consolePath;
-    private int $targetProcesses;
-
+    /**
+     * @param array{transports: list<string>, min_processes: int, max_processes: int, balance: string, scale_factor: int, autoscale_cooldown: int} $config
+     */
     public function __construct(
-        string $name,
-        array $config,
-        StorageInterface $storage,
-        ?ContainerInterface $receiverLocator,
-        Autoscaler $autoscaler
+        private readonly string $name,
+        private readonly array $config,
+        private readonly WorkerPool $pool,
+        private readonly AutoScaler $autoScaler,
+        private readonly QueueDepthProvider $queueDepths,
+        private readonly StorageInterface $storage,
     ) {
-        $this->name = $name;
-        $this->config = $config;
-        $this->storage = $storage;
-        $this->receiverLocator = $receiverLocator;
-        $this->autoscaler = $autoscaler;
-        $this->targetProcesses = $config['processes'] ?? 3;
-
-        $this->consolePath = realpath($_SERVER['argv'][0]) ?: 'bin/console';
     }
 
-    public function monitor(): void
+    public function name(): string
     {
-        // 1. Prune finished processes
-        foreach ($this->processes as $key => $process) {
-            if (!$process->isRunning()) {
-                unset($this->processes[$key]);
-            }
-        }
-
-        // 2. Adjust target process count if auto-scaling is enabled
-        if (($this->config['balance'] ?? 'simple') === 'auto') {
-            $pendingCount = $this->getPendingCount();
-            $this->targetProcesses = $this->autoscaler->scale(
-                count($this->processes),
-                $pendingCount,
-                $this->config['processes'] ?? 1,
-                $this->config['max_processes'] ?? 10
-            );
-        }
-
-        // 3. Spawn workers to reach target
-        while (count($this->processes) < $this->targetProcesses) {
-            $this->spawnWorker();
-        }
-
-        // 4. Terminate workers if target decreased
-        while (count($this->processes) > $this->targetProcesses) {
-            $extraProcess = array_pop($this->processes);
-            if ($extraProcess && $extraProcess->isRunning()) {
-                $extraProcess->stop(5);
-            }
-        }
-
-        // 5. Update supervisor heartbeat
-        $this->storage->recordSupervisorHeartbeat($this->name, [
-            'name' => $this->name,
-            'pid' => (string) getmypid(),
-            'target_workers' => (string) $this->targetProcesses,
-            'active_workers' => (string) count($this->processes),
-            'connection' => $this->config['connection'],
-            'queues' => implode(', ', $this->config['queues'] ?? []),
-            'balance' => $this->config['balance'] ?? 'simple',
-            'last_heartbeat' => (string) microtime(true),
-        ]);
+        return $this->name;
     }
 
-    public function terminate(): void
+    public function tick(): void
     {
-        foreach ($this->processes as $process) {
-            if ($process->isRunning()) {
-                $process->stop(10);
-            }
+        $reaped = $this->pool->reap();
+        $now = microtime(true);
+
+        if (!$this->paused && ($reaped > 0 || ($now - $this->lastScaleAt) >= $this->config['autoscale_cooldown'])) {
+            $this->lastScaleAt = $now;
+            $this->pool->scaleTo($this->desiredProcesses());
         }
-        $this->processes = [];
+
+        if (($now - $this->lastHeartbeatAt) >= 5.0) {
+            $this->heartbeat();
+        }
+    }
+
+    public function pause(): void
+    {
+        $this->paused = true;
+        $this->pool->scaleTo(0);
+        $this->heartbeat();
+    }
+
+    public function resume(): void
+    {
+        $this->paused = false;
+        $this->lastScaleAt = 0.0;
+        $this->heartbeat();
+    }
+
+    public function isPaused(): bool
+    {
+        return $this->paused;
+    }
+
+    public function stop(): void
+    {
+        $this->pool->stopAll();
         $this->storage->removeSupervisor($this->name);
     }
 
-    private function spawnWorker(): void
+    private function desiredProcesses(): int
     {
-        $command = [
-            PHP_BINARY,
-            $this->consolePath,
-            'messenger:consume',
-            $this->config['connection']
-        ];
+        if ($this->config['balance'] !== 'auto') {
+            $this->lastPending = $this->queueDepths->counts($this->config['transports']);
 
-        // Append configured queues if specified
-        if (!empty($this->config['queues'])) {
-            foreach ($this->config['queues'] as $queue) {
-                // If it is different from connection
-                if ($queue !== $this->config['connection']) {
-                    $command[] = $queue;
-                }
+            return max(1, $this->config['min_processes']);
+        }
+
+        $this->lastPending = $this->queueDepths->counts($this->config['transports']);
+        $pending = null;
+        foreach ($this->lastPending as $count) {
+            if ($count !== null) {
+                $pending = ($pending ?? 0) + $count;
             }
         }
 
-        if (isset($this->config['memory_limit'])) {
-            $command[] = sprintf('--memory-limit=%dM', $this->config['memory_limit']);
-        }
-        if (isset($this->config['time_limit'])) {
-            $command[] = sprintf('--time-limit=%d', $this->config['time_limit']);
-        }
-        if (isset($this->config['sleep'])) {
-            $command[] = sprintf('--sleep=%d', $this->config['sleep']);
-        }
-
-        $process = new Process($command);
-        $process->start();
-
-        $this->processes[] = $process;
+        return $this->autoScaler->desiredProcesses(
+            $pending,
+            $this->config['min_processes'],
+            $this->config['max_processes'],
+            $this->config['scale_factor'],
+        );
     }
 
-    private function getPendingCount(): int
+    private function heartbeat(): void
     {
-        if (!$this->receiverLocator) {
-            return 0;
-        }
+        $this->lastHeartbeatAt = microtime(true);
 
-        $totalPending = 0;
-        $queues = $this->config['queues'] ?? [$this->config['connection']];
-
-        foreach ($queues as $queueName) {
-            if ($this->receiverLocator->has($queueName)) {
-                $receiver = $this->receiverLocator->get($queueName);
-                if ($receiver instanceof MessageCountAwareInterface) {
-                    $totalPending += $receiver->getMessageCount();
-                }
-            }
-        }
-
-        return $totalPending;
+        $this->storage->heartbeatSupervisor($this->name, [
+            'name' => $this->name,
+            'pid' => (string) getmypid(),
+            'host' => gethostname() ?: 'unknown',
+            'status' => $this->paused ? 'paused' : 'running',
+            'processes' => (string) $this->pool->count(),
+            'min_processes' => (string) $this->config['min_processes'],
+            'max_processes' => (string) $this->config['max_processes'],
+            'balance' => $this->config['balance'],
+            'transports' => implode(',', $this->config['transports']),
+            'pending' => json_encode($this->lastPending) ?: '{}',
+            'updated_at' => (string) microtime(true),
+        ]);
     }
 }

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Horizon — Symfony Messenger</title>
+<style>
+:root{
+  --bg:#0b1120;--panel:#101b31;--panel2:#0d1729;--border:#1e2c48;--text:#dbe4f5;
+  --muted:#7d8db1;--accent:#7c6cf5;--accent2:#4f9cf7;--ok:#34d399;--warn:#fbbf24;--fail:#f87171;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+a{color:var(--accent2);text-decoration:none}
+header{display:flex;align-items:center;gap:14px;padding:16px 28px;border-bottom:1px solid var(--border);background:var(--panel2)}
+header .logo{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:600}
+header .logo svg{flex:none}
+header .env{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--fail);box-shadow:0 0 6px var(--fail)}
+.dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+nav{display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--border);background:var(--panel2)}
+nav button{appearance:none;background:none;border:none;color:var(--muted);font:inherit;font-weight:500;padding:12px 14px;cursor:pointer;border-bottom:2px solid transparent}
+nav button:hover{color:var(--text)}
+nav button.active{color:var(--text);border-bottom-color:var(--accent)}
+nav button .badge{background:var(--fail);color:#fff;border-radius:9px;font-size:11px;padding:0 6px;margin-left:6px;display:none}
+main{padding:24px 28px;max-width:1280px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;margin-bottom:22px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.card .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.card .value{font-size:24px;font-weight:600;margin-top:4px}
+.card .value small{font-size:13px;color:var(--muted);font-weight:400}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:22px;overflow:hidden}
+.panel h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:14px 18px;border-bottom:1px solid var(--border)}
+.panel .chart-wrap{padding:12px 18px 18px}
+canvas{width:100%;height:150px;display:block}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:10px 18px;border-bottom:1px solid var(--border)}
+td{padding:10px 18px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr.row-click{cursor:pointer}
+tr.row-click:hover td{background:rgba(124,108,245,.06)}
+td .sub{color:var(--muted);font-size:12px;margin-top:2px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+th.num{text-align:right}
+.status{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600}
+.status.completed{background:rgba(52,211,153,.14);color:var(--ok)}
+.status.failed{background:rgba(248,113,113,.15);color:var(--fail)}
+.status.released,.status.retried{background:rgba(251,191,36,.14);color:var(--warn)}
+.status.running,.status.processing{background:rgba(79,156,247,.15);color:var(--accent2)}
+.status.idle{background:rgba(125,141,177,.15);color:var(--muted)}
+.status.paused{background:rgba(251,191,36,.14);color:var(--warn)}
+.tag{display:inline-block;background:rgba(79,156,247,.12);color:var(--accent2);border-radius:5px;padding:1px 7px;font-size:11px;margin:2px 4px 0 0}
+.empty{padding:34px;text-align:center;color:var(--muted)}
+.btn{appearance:none;border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:7px;padding:6px 12px;font:inherit;font-size:12.5px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.btn.danger:hover{border-color:var(--fail);color:var(--fail)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.toolbar{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12.5px}
+.toolbar .spacer{flex:1}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+/* modal */
+#modal{position:fixed;inset:0;background:rgba(4,8,18,.7);display:none;align-items:flex-start;justify-content:center;padding:5vh 16px;z-index:50}
+#modal.open{display:flex}
+#modal .box{background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:860px;width:100%;max-height:90vh;overflow:auto}
+#modal .box header{position:sticky;top:0;display:flex;align-items:center;gap:12px;padding:14px 20px}
+#modal .box header .title{font-weight:600;word-break:break-all}
+#modal .box header .close{margin-left:auto;cursor:pointer;color:var(--muted);font-size:20px;background:none;border:none}
+#modal .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;padding:16px 20px;font-size:13px}
+#modal .kv .k{color:var(--muted)}
+#modal pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;margin:0 20px 18px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;max-height:300px}
+#modal h3{font-size:12px;text-transform:uppercase;color:var(--muted);letter-spacing:.05em;margin:4px 20px 8px}
+#toast{position:fixed;bottom:22px;right:22px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:8px;padding:10px 16px;display:none;z-index:60}
+#toast.err{border-left-color:var(--fail)}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#7c6cf5" stroke-width="2"/><path d="M4 14c3-5 13-5 16 0" stroke="#4f9cf7" stroke-width="2" stroke-linecap="round"/></svg>
+    Horizon <span style="color:var(--muted);font-weight:400">/ Symfony Messenger</span>
+  </div>
+  <div class="env"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></div>
+</header>
+<nav id="nav">
+  <button data-view="overview" class="active">Overview</button>
+  <button data-view="recent">Recent Jobs</button>
+  <button data-view="failed">Failed Jobs <span class="badge" id="failedBadge"></span></button>
+  <button data-view="metrics">Metrics</button>
+  <button data-view="workers">Workers</button>
+</nav>
+<main>
+  <!-- Overview -->
+  <section id="view-overview">
+    <div class="cards">
+      <div class="card"><div class="label">Jobs / minute</div><div class="value" id="c-jpm">–</div></div>
+      <div class="card"><div class="label">Jobs past hour</div><div class="value" id="c-hour">–</div></div>
+      <div class="card"><div class="label">Failed past hour</div><div class="value" id="c-failed-hour">–</div></div>
+      <div class="card"><div class="label">Avg runtime</div><div class="value" id="c-runtime">–</div></div>
+      <div class="card"><div class="label">Avg peak memory</div><div class="value" id="c-memory">–</div></div>
+      <div class="card"><div class="label">Avg wait</div><div class="value" id="c-wait">–</div></div>
+      <div class="card"><div class="label">Jobs total</div><div class="value" id="c-total">–</div></div>
+      <div class="card"><div class="label">Workers</div><div class="value" id="c-workers">–</div></div>
+    </div>
+    <div class="panel"><h2>Throughput — jobs per minute</h2><div class="chart-wrap"><canvas id="chart-throughput"></canvas></div></div>
+    <div class="grid2">
+      <div class="panel"><h2>Avg runtime (ms)</h2><div class="chart-wrap"><canvas id="chart-runtime"></canvas></div></div>
+      <div class="panel"><h2>Avg peak memory</h2><div class="chart-wrap"><canvas id="chart-memory"></canvas></div></div>
+    </div>
+  </section>
+
+  <!-- Recent jobs -->
+  <section id="view-recent" hidden>
+    <div class="panel">
+      <div class="toolbar"><span id="recent-count"></span><span class="spacer"></span><button class="btn" onclick="loadRecent()">Refresh</button></div>
+      <div id="recent-table"></div>
+    </div>
+  </section>
+
+  <!-- Failed jobs -->
+  <section id="view-failed" hidden>
+    <div class="panel">
+      <div class="toolbar"><span id="failed-count"></span><span class="spacer"></span><button class="btn" onclick="loadFailed()">Refresh</button></div>
+      <div id="failed-table"></div>
+    </div>
+  </section>
+
+  <!-- Metrics -->
+  <section id="view-metrics" hidden>
+    <div class="panel"><h2>Queues — past hour</h2><div id="metrics-queues"></div></div>
+    <div class="panel"><h2>Message classes — past hour</h2><div id="metrics-classes"></div></div>
+  </section>
+
+  <!-- Workers -->
+  <section id="view-workers" hidden>
+    <div class="panel"><h2>Supervisors</h2><div id="supervisors-table"></div></div>
+    <div class="panel"><h2>Workers</h2><div id="workers-table"></div></div>
+  </section>
+</main>
+
+<div id="modal"><div class="box">
+  <header><span class="title" id="m-title"></span><button class="close" onclick="closeModal()">✕</button></header>
+  <div id="m-body"></div>
+</div></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const BASE = "__BASE_PATH__";
+const api = p => fetch(BASE + "/api/" + p).then(r => r.json());
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const fmtMs = ms => ms == null ? "–" : ms >= 60000 ? (ms/60000).toFixed(1)+" min" : ms >= 1000 ? (ms/1000).toFixed(2)+" s" : ms.toFixed(ms < 10 ? 2 : 0)+" ms";
+const fmtBytes = b => b == null || b === 0 ? "–" : b >= 1073741824 ? (b/1073741824).toFixed(2)+" GB" : b >= 1048576 ? (b/1048576).toFixed(1)+" MB" : (b/1024).toFixed(0)+" KB";
+const fmtNum = n => (n ?? 0).toLocaleString();
+const ago = ts => {
+  if (!ts) return "–";
+  const s = Math.max(0, Date.now()/1000 - ts);
+  if (s < 60) return Math.floor(s)+"s ago";
+  if (s < 3600) return Math.floor(s/60)+"m ago";
+  if (s < 86400) return Math.floor(s/3600)+"h "+Math.floor(s%3600/60)+"m ago";
+  return new Date(ts*1000).toLocaleString();
+};
+const shortClass = c => c.split("\\").pop();
+
+/* ---- tiny line chart ---- */
+function drawChart(id, points, {color="#7c6cf5", fmt=v=>v} = {}) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 150;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!points.length) return;
+
+  const pad = {l:46, r:8, t:10, b:20};
+  const max = Math.max(...points.map(p => p.v), 1) * 1.15;
+  const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+  const x = i => pad.l + (points.length === 1 ? iw/2 : i/(points.length-1)*iw);
+  const y = v => pad.t + ih - v/max*ih;
+
+  ctx.strokeStyle = "#1e2c48"; ctx.fillStyle = "#7d8db1"; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
+  for (let g = 0; g <= 3; g++) {
+    const gv = max*g/3, gy = y(gv);
+    ctx.beginPath(); ctx.moveTo(pad.l, gy); ctx.lineTo(w-pad.r, gy); ctx.stroke();
+    ctx.fillText(fmt(gv), pad.l - 6, gy + 3);
+  }
+  ctx.textAlign = "center";
+  const step = Math.ceil(points.length/6);
+  points.forEach((p, i) => { if (i % step === 0) ctx.fillText(p.label, x(i), h - 5); });
+
+  const grad = ctx.createLinearGradient(0, pad.t, 0, h - pad.b);
+  grad.addColorStop(0, color + "44"); grad.addColorStop(1, color + "00");
+  ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(x(i), y(p.v)) : ctx.lineTo(x(i), y(p.v)));
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+  ctx.lineTo(x(points.length-1), h - pad.b); ctx.lineTo(x(0), h - pad.b); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+}
+
+/* ---- views / polling ---- */
+let view = "overview", timer = null;
+document.getElementById("nav").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b === btn));
+  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "view-" + btn.dataset.view);
+  view = btn.dataset.view;
+  refresh();
+});
+
+async function refresh() {
+  try {
+    await loadStats();
+    if (view === "recent") await loadRecent();
+    if (view === "failed") await loadFailed();
+    if (view === "metrics") await loadMetrics();
+    if (view === "workers") await loadWorkers();
+    setStatus(true);
+  } catch (e) { setStatus(false); }
+}
+function setStatus(ok) {
+  document.getElementById("statusDot").classList.toggle("on", ok && lastStats && lastStats.workers > 0);
+  document.getElementById("statusText").textContent = !ok ? "api unreachable"
+    : (lastStats && lastStats.workers > 0 ? lastStats.workers + " worker" + (lastStats.workers > 1 ? "s" : "") + " active" : "no workers running");
+}
+
+let lastStats = null;
+async function loadStats() {
+  const s = lastStats = await api("stats");
+  const set = (id, v) => document.getElementById(id).textContent = v;
+  set("c-jpm", fmtNum(s.jobs_per_minute));
+  set("c-hour", fmtNum(s.jobs_last_hour));
+  set("c-failed-hour", fmtNum(s.failed_last_hour));
+  set("c-runtime", fmtMs(s.avg_duration_ms));
+  set("c-memory", fmtBytes(s.avg_memory));
+  set("c-wait", fmtMs(s.avg_wait_ms));
+  set("c-total", fmtNum(s.jobs_total));
+  set("c-workers", fmtNum(s.workers));
+  const badge = document.getElementById("failedBadge");
+  badge.style.display = s.failed_count > 0 ? "inline-block" : "none";
+  badge.textContent = fmtNum(s.failed_count);
+  if (view === "overview") {
+    const pts = f => s.series.map(p => ({label: p.minute, v: f(p)}));
+    drawChart("chart-throughput", pts(p => p.jobs), {color: "#7c6cf5", fmt: v => Math.round(v)});
+    drawChart("chart-runtime", pts(p => p.avg_duration_ms), {color: "#4f9cf7", fmt: v => v >= 1000 ? (v/1000).toFixed(1)+"s" : Math.round(v)});
+    drawChart("chart-memory", pts(p => p.avg_memory), {color: "#34d399", fmt: v => v >= 1048576 ? (v/1048576).toFixed(0)+"M" : (v/1024).toFixed(0)+"K"});
+  }
+}
+
+function jobRows(jobs, failedActions) {
+  if (!jobs.length) return '<div class="empty">Nothing here yet.</div>';
+  return `<table><thead><tr>
+      <th>Job</th><th>Queue</th><th>Status</th>
+      <th class="num">Runtime</th><th class="num">Peak mem</th><th class="num">Wait</th><th class="num">Finished</th>
+      ${failedActions ? "<th></th>" : ""}
+    </tr></thead><tbody>` +
+    jobs.map(j => `<tr class="row-click" onclick="openJob('${esc(j.id)}')">
+      <td><span class="mono">${esc(shortClass(j.class))}</span>${j.attempts > 1 ? ` <span class="tag">attempt ${j.attempts}</span>` : ""}
+        ${j.tags.length ? `<div class="sub">${j.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}</td>
+      <td>${esc(j.queue)}</td>
+      <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
+      <td class="num">${fmtMs(j.duration_ms)}</td>
+      <td class="num">${fmtBytes(j.peak_memory)}</td>
+      <td class="num">${fmtMs(j.wait_ms)}</td>
+      <td class="num" title="${new Date(j.finished_at*1000).toLocaleString()}">${ago(j.finished_at)}</td>
+      ${failedActions ? `<td class="num" onclick="event.stopPropagation()">
+          <button class="btn" ${j.retryable ? "" : "disabled"} onclick="retryJob('${esc(j.id)}')">Retry</button>
+          <button class="btn danger" onclick="deleteJob('${esc(j.id)}')">Delete</button></td>` : ""}
+    </tr>`).join("") + "</tbody></table>";
+}
+
+async function loadRecent() {
+  const d = await api("jobs/recent?limit=50");
+  document.getElementById("recent-count").textContent = fmtNum(d.total) + " job(s) in window";
+  document.getElementById("recent-table").innerHTML = jobRows(d.jobs, false);
+}
+async function loadFailed() {
+  const d = await api("jobs/failed?limit=50");
+  document.getElementById("failed-count").textContent = fmtNum(d.total) + " failed job(s)";
+  document.getElementById("failed-table").innerHTML = jobRows(d.jobs, true);
+}
+
+async function loadMetrics() {
+  for (const [path, el] of [["metrics/queues", "metrics-queues"], ["metrics/classes", "metrics-classes"]]) {
+    const d = await api(path);
+    document.getElementById(el).innerHTML = !d.items.length ? '<div class="empty">No data yet.</div>' :
+      `<table><thead><tr><th>Name</th><th class="num">Jobs</th><th class="num">Failed</th><th class="num">Avg runtime</th><th class="num">Avg peak mem</th><th class="num">Avg wait</th></tr></thead><tbody>` +
+      d.items.map(i => `<tr>
+        <td class="mono">${esc(el === "metrics-classes" ? shortClass(i.name) : i.name)}</td>
+        <td class="num">${fmtNum(i.jobs)}</td>
+        <td class="num" style="color:${i.failed > 0 ? "var(--fail)" : "inherit"}">${fmtNum(i.failed)}</td>
+        <td class="num">${fmtMs(i.avg_duration_ms)}</td>
+        <td class="num">${fmtBytes(i.avg_memory)}</td>
+        <td class="num">${fmtMs(i.avg_wait_ms)}</td>
+      </tr>`).join("") + "</tbody></table>";
+  }
+}
+
+async function loadWorkers() {
+  const s = await api("supervisors");
+  document.getElementById("supervisors-table").innerHTML = !s.supervisors.length
+    ? '<div class="empty">No supervisor running. Start one with <span class="mono">bin/console horizon</span>.</div>'
+    : `<table><thead><tr><th>Name</th><th>Host</th><th>Status</th><th class="num">Processes</th><th>Transports</th><th>Pending</th></tr></thead><tbody>` +
+      s.supervisors.map(v => `<tr>
+        <td>${esc(v.name)}</td><td>${esc(v.host || "")}</td>
+        <td><span class="status ${esc(v.status)}">${esc(v.status)}</span></td>
+        <td class="num">${v.processes} <small style="color:var(--muted)">/ ${esc(v.max_processes || "?")}</small></td>
+        <td class="mono">${esc(v.transports || "")}</td>
+        <td class="mono">${esc(Object.entries(v.pending).map(([q, n]) => q + ": " + (n === null ? "?" : n)).join("  ") || "–")}</td>
+      </tr>`).join("") + "</tbody></table>";
+
+  const w = await api("workers");
+  document.getElementById("workers-table").innerHTML = !w.workers.length
+    ? '<div class="empty">No workers reporting.</div>'
+    : `<table><thead><tr><th>Worker</th><th>Transports</th><th>Status</th><th class="num">Processed</th><th class="num">Failed</th><th class="num">Memory</th><th class="num">Uptime</th></tr></thead><tbody>` +
+      w.workers.map(v => `<tr>
+        <td class="mono">${esc(v.id)}</td>
+        <td class="mono">${esc(v.transports || "")}</td>
+        <td><span class="status ${esc(v.status)}">${esc(v.status)}</span>${v.current_class ? `<div class="sub mono">${esc(shortClass(v.current_class))}</div>` : ""}</td>
+        <td class="num">${fmtNum(v.processed)}</td>
+        <td class="num">${fmtNum(v.failed)}</td>
+        <td class="num">${fmtBytes(v.memory)}</td>
+        <td class="num">${ago(v.started_at).replace(" ago", "")}</td>
+      </tr>`).join("") + "</tbody></table>";
+}
+
+/* ---- job detail modal ---- */
+async function openJob(id) {
+  const d = await api("jobs/" + encodeURIComponent(id));
+  if (d.error) return toast(d.error, true);
+  const j = d.job;
+  document.getElementById("m-title").textContent = j.class;
+  const kv = [
+    ["Status", `<span class="status ${esc(j.status)}">${esc(j.status)}</span>`],
+    ["Queue", esc(j.queue)],
+    ["Runtime", fmtMs(j.duration_ms)],
+    ["Peak memory", fmtBytes(j.peak_memory)],
+    ["Memory retained", fmtBytes(j.memory_used)],
+    ["Queue wait", fmtMs(j.wait_ms)],
+    ["Attempts", j.attempts],
+    ["Worker", `<span class="mono">${esc(j.worker_id)}</span>`],
+    ["Received", j.received_at ? new Date(j.received_at*1000).toLocaleString() : "–"],
+    ["Finished", j.finished_at ? new Date(j.finished_at*1000).toLocaleString() : "–"],
+    ["Tags", j.tags.length ? j.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("") : "–"],
+    ["Job id", `<span class="mono">${esc(j.id)}</span>`],
+  ];
+  let html = `<div class="kv">${kv.map(([k, v]) => `<div class="k">${k}</div><div>${v}</div>`).join("")}</div>`;
+  if (j.payload) html += `<h3>Payload</h3><pre>${esc(j.payload)}</pre>`;
+  if (j.exception_class) html += `<h3>Exception — <span class="mono">${esc(j.exception_class)}</span></h3><pre>${esc(j.exception_message)}\n\n${esc(j.exception_trace || "")}</pre>`;
+  if (j.status === "failed") html += `<div style="padding:0 20px 20px">
+      <button class="btn" ${j.retryable ? "" : "disabled"} onclick="retryJob('${esc(j.id)}', true)">Retry job</button>
+      <button class="btn danger" onclick="deleteJob('${esc(j.id)}', true)">Delete job</button></div>`;
+  document.getElementById("m-body").innerHTML = html;
+  document.getElementById("modal").classList.add("open");
+}
+function closeModal() { document.getElementById("modal").classList.remove("open"); }
+document.getElementById("modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+async function retryJob(id, fromModal) {
+  const r = await fetch(BASE + "/api/jobs/" + encodeURIComponent(id) + "/retry", {method: "POST"}).then(r => r.json());
+  r.ok ? toast("Job dispatched for retry") : toast(r.error || "Retry failed", true);
+  if (fromModal) closeModal();
+  loadFailed(); loadStats();
+}
+async function deleteJob(id, fromModal) {
+  await fetch(BASE + "/api/jobs/" + encodeURIComponent(id), {method: "DELETE"});
+  toast("Job deleted");
+  if (fromModal) closeModal();
+  loadFailed(); loadStats();
+}
+
+let toastTimer;
+function toast(msg, err) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = err ? "err" : "";
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.style.display = "none", 3500);
+}
+
+refresh();
+timer = setInterval(refresh, 3000);
+document.addEventListener("visibilitychange", () => {
+  clearInterval(timer);
+  if (!document.hidden) { refresh(); timer = setInterval(refresh, 3000); }
+});
+</script>
+</body>
+</html>

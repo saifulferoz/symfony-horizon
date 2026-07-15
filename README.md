@@ -1,102 +1,145 @@
 # Symfony Horizon
 
-A Laravel Horizon style dashboard and queue worker supervisor for **Symfony Messenger**.
+Laravel Horizon-style dashboard, supervisor and per-job metrics for **Symfony Messenger**.
 
-Symfony Horizon provides a beautiful, real-time glassmorphism dashboard and code-driven configuration for your Symfony Messenger transports. It monitors key metrics such as job throughput, runtimes, queue backlogs, and allows you to inspect, retry, or delete failed jobs directly from the web panel.
+- 📊 **Dashboard** — throughput, failed jobs, live workers; self-contained HTML (no build step, no CDN)
+- ⏱ **Per-job metrics** — processing time (`hrtime`), **true peak memory per job** (`memory_reset_peak_usage`), retained memory, queue wait time, attempts
+- 🚦 **Supervisor** — `bin/console horizon` spawns, monitors and **autoscales** `messenger:consume` workers based on queue depth
+- 🔁 **Failed jobs** — full exception + payload, one-click retry to the original transport
+- 🏷 **Tags** — `#[HorizonTags('billing')]` attribute or `TaggableInterface`
+- 🪶 **Near-zero overhead** — nothing runs in web requests; worker metrics are buffered and flushed to Redis in pipelined batches
 
----
+## Requirements
 
-## Features
-
-- 📊 **Real-time Metrics Dashboard**: View throughput curves, queue status, active workers, and failure logs.
-- ⚙️ **Code-Driven Configuration**: Define your supervisors and queue workers in your Symfony YAML configuration.
-- 📈 **Dynamic Auto-Scaling**: Automatically scale worker processes up or down based on transport queue backlogs.
-- 🛡️ **Built-in Security**: Secure your dashboard with default roles (e.g. `ROLE_ADMIN`) or custom security voters.
-- 🔄 **Failed Jobs Manager**: Inspect stack traces, retry/re-queue failed messages, or delete them permanently.
-- 🚀 **Zero Front-end Build Dependencies**: Serving a self-contained, high-performance HTML dashboard out-of-the-box.
-
----
+- PHP ≥ 8.2 (needed for accurate per-job peak memory)
+- Symfony 6.4 / 7.x, symfony/messenger
+- Redis for metrics storage (phpredis extension or `predis/predis`) — your Messenger transports can be anything (Doctrine, AMQP, Redis, SQS, ...)
 
 ## Installation
-
-Add the bundle to your project's `composer.json` or install it using Composer:
 
 ```bash
 composer require saifulferoz/symfony-horizon
 ```
 
-Register the bundle in `config/bundles.php` (if not done automatically by Symfony Flex):
+Register the bundle (if not done by Flex), in `config/bundles.php`:
 
 ```php
-return [
-    // ...
-    Saifulferoz\SymfonyHorizon\SymfonyHorizonBundle::class => ['all' => true],
-];
+Saifulferoz\SymfonyHorizon\SymfonyHorizonBundle::class => ['all' => true],
 ```
 
----
+Import the routes, e.g. `config/routes/symfony_horizon.yaml`:
+
+```yaml
+symfony_horizon:
+    resource: '@SymfonyHorizonBundle/config/routes.php'
+    prefix: /horizon
+```
+
+**Protect the dashboard** with your own security config — the bundle deliberately ships no auth:
+
+```yaml
+# config/packages/security.yaml
+access_control:
+    - { path: ^/horizon, roles: ROLE_ADMIN }
+```
 
 ## Configuration
 
-Configure the bundle by creating a new `config/packages/symfony_horizon.yaml` file:
+All keys are optional except `supervisors` (needed for the `horizon` command). Defaults shown:
 
 ```yaml
+# config/packages/symfony_horizon.yaml
 symfony_horizon:
-    prefix: 'horizon:'                  # Redis key prefix
-    failure_transport: 'failed'         # Your failure transport receiver name
-    storage:
-        type: 'redis'
-        redis_connection: 'snc_redis.default' # Redis client service ID
-    dashboard:
-        path: '/horizon'
-        role: 'ROLE_ADMIN'              # Required role to access dashboard
+    redis:
+        dsn: 'redis://localhost:6379'
+        # client_service: my.redis.service   # reuse an existing \Redis / Predis client instead
+        prefix: 'horizon:'
+
+    metrics:
+        flush_batch: 25          # buffer N job records per Redis pipeline flush
+        flush_interval: 3        # ...or flush at least every N seconds
+        sampling: 1.0            # store 1.0 = all job records; counters always count everything
+        capture_payload: false   # store (truncated) payloads of successful jobs
+        payload_max_bytes: 10240
+        wait_time_stamp: true    # tiny dispatch-side stamp enabling queue wait-time metrics
+
+    trim:                        # retention, minutes
+        recent: 60               # completed job records
+        failed: 10080            # failed job records (7 days)
+        metrics: 1440            # per-minute metric buckets (24 h)
+        snapshots: 10080         # hourly snapshots (7 days)
+
     supervisors:
-        default-supervisor:
-            connection: 'async'         # Messenger transport name
-            queues: ['default', 'emails'] # Specific queues to consume
-            processes: 3                # Min worker processes (always running)
-            max_processes: 10           # Max worker processes for auto-scaling
-            balance: 'auto'             # auto, simple, or false
-            memory_limit: 128           # MB limit per worker before exit
-            time_limit: 3600            # Worker TTL in seconds before exit
-            sleep: 3                    # Seconds to sleep when queues are empty
+        default:
+            transports: [async]
+            min_processes: 1
+            max_processes: 10
+            balance: auto        # off = pin to min_processes, auto = scale on queue depth
+            scale_factor: 10     # pending messages one worker is expected to absorb
+            autoscale_cooldown: 3
+            memory_limit: 128    # MB, passed to messenger:consume --memory-limit
+            time_limit: 3600     # s, passed to messenger:consume --time-limit
+            consume_options: []  # extra CLI options, e.g. ['--queues=high']
 ```
 
-Import the routes in `config/routes.yaml`:
-
-```yaml
-symfony_horizon:
-    resource: '@SymfonyHorizonBundle/Controller/'
-    type: attribute
-```
-
----
-
-## Usage
-
-### Starting the Daemon
-
-Run the master daemon using the console command. The daemon will read your configuration, spawn the required supervisor pools, and manage the workers:
+## Running
 
 ```bash
-bin/console messenger:horizon
+bin/console horizon             # start supervisor + workers (use systemd/supervisord in prod)
+bin/console horizon:pause       # stop consuming (graceful)
+bin/console horizon:continue    # resume
+bin/console horizon:terminate   # graceful shutdown
+bin/console horizon:snapshot    # roll metrics into snapshots — cron it every 5 minutes
 ```
 
-It is highly recommended to run this command under a system-level process manager like **Supervisor** or **Systemd** in production to ensure it remains active:
+Open `https://your-app/horizon` for the dashboard. Autoscaling uses the transports' message counts and works with any transport implementing `MessageCountAwareInterface` (Doctrine, Redis, AMQP, ...).
+
+You can also run plain `bin/console messenger:consume` workers without the supervisor — they still report metrics and appear on the dashboard.
+
+### Deployment note
+
+Restart Horizon on deploy (`horizon:terminate` + process manager restart), exactly like Laravel Horizon. Example systemd unit:
 
 ```ini
-[program:symfony-horizon]
-process_name=%(program_name)s
-command=php /path-to-your-project/bin/console messenger:horizon
-autostart=true
-autorestart=true
-user=www-data
-redirect_stderr=true
-stdout_logfile=/path-to-your-project/var/log/horizon.log
+[Service]
+ExecStart=/usr/bin/php /srv/app/bin/console horizon
+ExecStop=/usr/bin/php /srv/app/bin/console horizon:terminate
+Restart=always
 ```
 
----
+## Tagging jobs
+
+```php
+use Saifulferoz\SymfonyHorizon\Tags\HorizonTags;
+use Saifulferoz\SymfonyHorizon\Tags\TaggableInterface;
+
+#[HorizonTags('billing', 'critical')]
+final class ChargeInvoice implements TaggableInterface
+{
+    public function __construct(public int $invoiceId) {}
+
+    public function horizonTags(): array
+    {
+        return ['invoice:' . $this->invoiceId];
+    }
+}
+```
+
+## Why it doesn't slow your app down
+
+1. **No web/dispatch overhead.** Metrics hook exclusively into `Worker*` events, which only exist inside `messenger:consume`. The single optional dispatch-side hook adds one timestamp stamp (microseconds, disable with `wait_time_stamp: false`).
+2. **Batched pipelined writes.** Job records and counters are buffered in the worker and written in one Redis pipeline per batch (default 25 jobs / 3 s) — not 3–5 round-trips per message.
+3. **Bounded Redis usage.** Charts read O(1) per-minute aggregate buckets; individual records live in trimmed, TTL'd keys.
+4. **Payloads are opt-in** and truncated; failed jobs always keep enough to debug and retry.
+5. **Sampling** (`sampling: 0.1`) for very high-volume queues — counters stay exact, only per-job detail rows are sampled.
+
+## Testing
+
+```bash
+composer install
+vendor/bin/phpunit
+```
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT
