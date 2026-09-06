@@ -17,6 +17,16 @@ final class Supervisor
     private float $lastHeartbeatAt = 0.0;
     /** @var array<string, int|null> */
     private array $lastPending = [];
+    /**
+     * Identity of this supervisor *instance*. The configured name is shared by
+     * every host running the same config, so the heartbeat is keyed by
+     * name@host:pid plus a random suffix — otherwise instances overwrite each
+     * other's heartbeat and the dashboard shows one supervisor with the wrong
+     * process count. The suffix also separates two supervisors that share a
+     * host and PID (several blocks in one horizon process, or two processes
+     * started in the same container).
+     */
+    private readonly string $instanceId;
 
     /**
      * @param array{transports: list<string>, min_processes: int, max_processes: int, balance: string, scale_factor: int, autoscale_cooldown: int} $config
@@ -29,11 +39,26 @@ final class Supervisor
         private readonly QueueDepthProvider $queueDepths,
         private readonly StorageInterface $storage,
     ) {
+        $this->instanceId = sprintf(
+            '%s@%s:%d.%s',
+            $name,
+            gethostname() ?: 'unknown',
+            getmypid() ?: 0,
+            bin2hex(random_bytes(3)),
+        );
     }
 
     public function name(): string
     {
         return $this->name;
+    }
+
+    /**
+     * Cluster-unique id for this supervisor instance (name@host:pid).
+     */
+    public function instanceId(): string
+    {
+        return $this->instanceId;
     }
 
     public function tick(): void
@@ -73,7 +98,7 @@ final class Supervisor
     public function stop(): void
     {
         $this->pool->stopAll();
-        $this->storage->removeSupervisor($this->name);
+        $this->storage->removeSupervisor($this->instanceId);
     }
 
     private function desiredProcesses(): int
@@ -104,7 +129,8 @@ final class Supervisor
     {
         $this->lastHeartbeatAt = microtime(true);
 
-        $this->storage->heartbeatSupervisor($this->name, [
+        $this->storage->heartbeatSupervisor($this->instanceId, [
+            'id' => $this->instanceId,
             'name' => $this->name,
             'pid' => (string) getmypid(),
             'host' => gethostname() ?: 'unknown',

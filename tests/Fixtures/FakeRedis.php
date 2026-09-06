@@ -171,19 +171,38 @@ final class FakeRedis
         return $this->strings[$key] ?? null;
     }
 
-    public function set(string $key, string $value): bool
-    {
-        $this->strings[$key] = $value;
-
-        return true;
-    }
-
     /** @return list<string> */
     public function keys(string $pattern): array
     {
         $all = [...array_keys($this->strings), ...array_keys($this->hashes), ...array_keys($this->sets), ...array_keys($this->zsets), ...array_keys($this->lists)];
 
         return array_values(array_unique(array_filter($all, static fn (string $key): bool => fnmatch($pattern, $key))));
+    }
+
+    public function incr(string $key): int
+    {
+        return $this->incrby($key, 1);
+    }
+
+    /**
+     * Predis-style SET with EX/NX modifiers, e.g. set($k, $v, 'EX', 60, 'NX').
+     * Returns false when NX is given and the key already exists.
+     *
+     * @param string|int ...$modifiers
+     */
+    public function set(string $key, string $value, string|int ...$modifiers): bool
+    {
+        $flags = array_map(
+            static fn (string|int $flag): string => strtoupper((string) $flag),
+            $modifiers,
+        );
+
+        if (\in_array('NX', $flags, true) && isset($this->strings[$key])) {
+            return false;
+        }
+        $this->strings[$key] = $value;
+
+        return true;
     }
 
     public function incrby(string $key, int $by): int

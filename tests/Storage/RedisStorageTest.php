@@ -12,6 +12,9 @@ use Saifulferoz\SymfonyHorizon\Tests\Fixtures\FakeRedis;
 
 final class RedisStorageTest extends TestCase
 {
+    /** Effective key prefix: configured prefix + schema version segment. */
+    private const KEY = 'horizon:v1:';
+
     private FakeRedis $redis;
     private RedisStorage $storage;
 
@@ -65,24 +68,24 @@ final class RedisStorageTest extends TestCase
             $this->bucket('App\\Message\\Demo', jobs: 2, failed: 1, durationSum: 25.0),
         );
 
-        self::assertSame('completed', $this->redis->hashes['horizon:job:job1']['status']);
-        self::assertSame('failed', $this->redis->hashes['horizon:job:job2']['status']);
-        self::assertSame('boom', $this->redis->hashes['horizon:job:job2']['exception_message']);
+        self::assertSame('completed', $this->redis->hashes[self::KEY . 'job:job1']['status']);
+        self::assertSame('failed', $this->redis->hashes[self::KEY . 'job:job2']['status']);
+        self::assertSame('boom', $this->redis->hashes[self::KEY . 'job:job2']['exception_message']);
 
-        self::assertArrayHasKey('job1', $this->redis->zsets['horizon:jobs:recent']);
-        self::assertArrayHasKey('job2', $this->redis->zsets['horizon:jobs:recent']);
-        self::assertArrayHasKey('job2', $this->redis->zsets['horizon:jobs:failed']);
-        self::assertArrayNotHasKey('job1', $this->redis->zsets['horizon:jobs:failed'] ?? []);
+        self::assertArrayHasKey('job1', $this->redis->zsets[self::KEY . 'jobs:recent']);
+        self::assertArrayHasKey('job2', $this->redis->zsets[self::KEY . 'jobs:recent']);
+        self::assertArrayHasKey('job2', $this->redis->zsets[self::KEY . 'jobs:failed']);
+        self::assertArrayNotHasKey('job1', $this->redis->zsets[self::KEY . 'jobs:failed'] ?? []);
 
-        self::assertSame('2', $this->redis->strings['horizon:stats:jobs']);
-        self::assertSame('1', $this->redis->strings['horizon:stats:failed']);
-        self::assertSame(['async'], $this->redis->smembers('horizon:queues'));
-        self::assertSame(['App\\Message\\Demo'], $this->redis->smembers('horizon:classes'));
+        self::assertSame('2', $this->redis->strings[self::KEY . 'stats:jobs']);
+        self::assertSame('1', $this->redis->strings[self::KEY . 'stats:failed']);
+        self::assertSame(['async'], $this->redis->smembers(self::KEY . 'queues'));
+        self::assertSame(['App\\Message\\Demo'], $this->redis->smembers(self::KEY . 'classes'));
 
         // every job hash gets a TTL so Redis stays bounded
-        self::assertArrayHasKey('horizon:job:job1', $this->redis->ttls);
-        self::assertArrayHasKey('horizon:job:job2', $this->redis->ttls);
-        self::assertGreaterThan($this->redis->ttls['horizon:job:job1'], $this->redis->ttls['horizon:job:job2'], 'failed jobs are kept longer');
+        self::assertArrayHasKey(self::KEY . 'job:job1', $this->redis->ttls);
+        self::assertArrayHasKey(self::KEY . 'job:job2', $this->redis->ttls);
+        self::assertGreaterThan($this->redis->ttls[self::KEY . 'job:job1'], $this->redis->ttls[self::KEY . 'job:job2'], 'failed jobs are kept longer');
     }
 
     public function testRecentJobsArePagedNewestFirst(): void
@@ -170,11 +173,11 @@ final class RedisStorageTest extends TestCase
         $this->storage->heartbeatWorker('2@host', ['id' => '2@host', 'status' => 'processing']);
 
         // simulate TTL expiry of worker 2's hash
-        unset($this->redis->hashes['horizon:worker:2@host']);
+        unset($this->redis->hashes[self::KEY . 'worker:2@host']);
 
         $workers = $this->storage->getWorkers();
         self::assertSame(['1@host'], array_keys($workers));
-        self::assertSame(['1@host'], $this->redis->smembers('horizon:workers'), 'stale member must be pruned from the set');
+        self::assertSame(['1@host'], $this->redis->smembers(self::KEY . 'workers'), 'stale member must be pruned from the set');
     }
 
     public function testSupervisorLifecycle(): void
@@ -186,35 +189,95 @@ final class RedisStorageTest extends TestCase
         self::assertSame([], $this->storage->getSupervisors());
     }
 
-    public function testCommandQueueIsFifo(): void
+    public function testControlCommandIsBroadcastStateNotAQueue(): void
     {
-        $this->storage->pushCommand(StorageInterface::CMD_PAUSE);
-        $this->storage->pushCommand(StorageInterface::CMD_CONTINUE);
+        self::assertNull($this->storage->readCommand(), 'no command issued yet');
 
-        self::assertSame('pause', $this->storage->popCommand());
-        self::assertSame('continue', $this->storage->popCommand());
-        self::assertNull($this->storage->popCommand());
+        $this->storage->pushCommand(StorageInterface::CMD_PAUSE);
+
+        $first = $this->storage->readCommand();
+        self::assertSame(StorageInterface::CMD_PAUSE, $first['command']);
+
+        // Reading must NOT consume: every horizon instance has to see it.
+        $second = $this->storage->readCommand();
+        self::assertSame($first, $second, 'the command must survive being read');
+
+        // A newer command supersedes the previous one with a higher version.
+        $this->storage->pushCommand(StorageInterface::CMD_CONTINUE);
+        $next = $this->storage->readCommand();
+        self::assertSame(StorageInterface::CMD_CONTINUE, $next['command']);
+        self::assertGreaterThan($first['version'], $next['version'], 'versions increase monotonically');
     }
 
-    public function testStaleKeysFromOldSchemaAreWipedOnce(): void
+    public function testLockIsGrantedOnlyOnce(): void
     {
-        // the pre-rewrite bundle stored these as lists; ZADD against them fails
+        self::assertTrue($this->storage->acquireLock('snapshot', 60), 'first caller wins');
+        self::assertFalse($this->storage->acquireLock('snapshot', 60), 'a second instance must be refused');
+        self::assertTrue($this->storage->acquireLock('other', 60), 'unrelated locks are independent');
+    }
+
+    public function testLegacyKeysFromAnIncompatibleLayoutAreIgnored(): void
+    {
+        // The pre-rewrite bundle stored these as lists at the unversioned keys.
+        // ZADD against a list fails with WRONGTYPE, which previously left the
+        // job indexes silently empty; the version segment must keep them apart.
         $this->redis->lists['horizon:jobs:recent'] = ['old1', 'old2'];
         $this->redis->lists['horizon:jobs:failed'] = ['old3'];
         $this->redis->strings['horizon:stats:total_jobs'] = '999';
-        $this->redis->strings['unrelated:key'] = 'kept';
 
         $this->storage->flush([$this->record('fresh')], $this->bucket('async'), []);
 
-        self::assertArrayNotHasKey('horizon:jobs:recent', $this->redis->lists, 'stale list must be wiped');
-        self::assertArrayNotHasKey('horizon:stats:total_jobs', $this->redis->strings);
-        self::assertSame('kept', $this->redis->strings['unrelated:key'], 'only the horizon prefix is wiped');
-        self::assertSame('1', $this->redis->strings['horizon:schema']);
-        self::assertSame(1, $this->storage->getRecentJobs()['total'], 'new-format writes work after the wipe');
+        // New data lands under the versioned namespace...
+        self::assertArrayHasKey(self::KEY . 'jobs:recent', $this->redis->zsets);
+        self::assertSame(1, $this->storage->getRecentJobs()['total']);
 
-        // second storage instance against the same data must not wipe again
-        $again = new RedisStorage($this->redis, 'horizon:');
-        self::assertSame(1, $again->getRecentJobs()['total']);
+        // ...and legacy keys are neither read nor destroyed; they age out via TTL.
+        self::assertSame(['old1', 'old2'], $this->redis->lists['horizon:jobs:recent']);
+        self::assertSame('999', $this->redis->strings['horizon:stats:total_jobs']);
+    }
+
+    public function testPageJobsSkipsExpiredPayloadsAndSelfHealsTheIndex(): void
+    {
+        $now = microtime(true);
+        $records = [];
+        for ($i = 0; $i < 5; ++$i) {
+            $records[] = $this->record('j' . $i, finishedAt: $now + $i);
+        }
+        $this->storage->flush($records, $this->bucket('async', jobs: 5), []);
+
+        // Three job hashes reach their TTL while their ids remain in the index.
+        foreach (['j0', 'j1', 'j2'] as $id) {
+            unset($this->redis->hashes[self::KEY . 'job:' . $id]);
+        }
+
+        $page = $this->storage->getRecentJobs(50);
+
+        self::assertCount(2, $page['jobs'], 'only fetchable jobs are returned');
+        self::assertSame(2, $page['total'], 'total must match what can actually be paged through');
+        self::assertCount(2, $this->redis->zsets[self::KEY . 'jobs:recent'], 'dangling ids are pruned');
+
+        // Stable on repeat: the index has healed, so the same page comes back.
+        $again = $this->storage->getRecentJobs(50);
+        self::assertCount(2, $again['jobs']);
+        self::assertSame(2, $again['total']);
+    }
+
+    public function testPageJobsFillsAFullPageDespiteExpiredPayloads(): void
+    {
+        $now = microtime(true);
+        $records = [];
+        for ($i = 0; $i < 6; ++$i) {
+            $records[] = $this->record('k' . $i, finishedAt: $now + $i);
+        }
+        $this->storage->flush($records, $this->bucket('async', jobs: 6), []);
+
+        // Expire the two newest, which would otherwise consume the whole page.
+        unset($this->redis->hashes[self::KEY . 'job:k5'], $this->redis->hashes[self::KEY . 'job:k4']);
+
+        $page = $this->storage->getRecentJobs(2);
+
+        self::assertCount(2, $page['jobs'], 'the page is filled from further down the index');
+        self::assertSame(['k3', 'k2'], array_column($page['jobs'], 'id'));
     }
 
     public function testSnapshotRollup(): void

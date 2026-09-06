@@ -3,7 +3,16 @@
     "description": "Laravel Horizon style dashboard, supervisor and per-job metrics (runtime, memory) for Symfony Messenger",
     "type": "symfony-bundle",
     "license": "MIT",
-    "keywords": ["symfony", "messenger", "horizon", "queue", "worker", "dashboard", "monitoring", "metrics"],
+    "keywords": [
+        "symfony",
+        "messenger",
+        "horizon",
+        "queue",
+        "worker",
+        "dashboard",
+        "monitoring",
+        "metrics"
+    ],
     "authors": [
         {
             "name": "Saiful Islam Feroz",
@@ -12,6 +21,7 @@
     ],
     "require": {
         "php": ">=8.2",
+        "psr/log": "^1.1 || ^2.0 || ^3.0",
         "symfony/console": "^6.4 || ^7.0 || ^8.0",
         "symfony/framework-bundle": "^6.4 || ^7.0 || ^8.0",
         "symfony/messenger": "^6.4 || ^7.0 || ^8.0",

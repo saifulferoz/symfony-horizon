@@ -81,7 +81,29 @@ interface StorageInterface
     /** @return list<array<string, int|float|string>> */
     public function getSnapshots(string $type, string $name, int $limit = 168): array;
 
+    /**
+     * Broadcasts a control command to every running horizon instance.
+     *
+     * Commands are stored as a monotonically versioned state rather than a
+     * queue: a queue is drained by whichever instance polls first, which on a
+     * multi-host deployment would pause one instance and leave the others
+     * consuming.
+     */
     public function pushCommand(string $command): void;
 
-    public function popCommand(): ?string;
+    /**
+     * Returns the current control command and its version, or null if none was
+     * ever issued. Every instance reads the same state, so each can apply a
+     * command exactly once by tracking the version it last saw.
+     *
+     * @return array{command: string, version: int}|null
+     */
+    public function readCommand(): ?array;
+
+    /**
+     * Attempts to acquire a short-lived, cluster-wide lock. Returns false when
+     * another instance already holds it. Used to keep periodic work (e.g.
+     * snapshots) idempotent when it runs on several hosts.
+     */
+    public function acquireLock(string $name, int $ttlSeconds): bool;
 }

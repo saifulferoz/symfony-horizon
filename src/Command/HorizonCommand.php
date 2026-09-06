@@ -26,6 +26,12 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
     private const TICK_SECONDS = 1;
 
     private bool $shouldTerminate = false;
+    /**
+     * Version of the last control command applied by THIS instance. Commands
+     * are broadcast state, so each instance de-duplicates independently and
+     * every instance reacts to a pause/continue/terminate.
+     */
+    private ?int $lastCommandVersion = null;
 
     /**
      * @param array<string, array<string, mixed>> $supervisorsConfig
@@ -79,7 +85,19 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
         }
 
         if ($config === []) {
-            $output->writeln('<error>No supervisors configured.</error> Define at least one block under <comment>symfony_horizon.supervisors</comment>, e.g.:');
+            if ($only !== []) {
+                $output->writeln(sprintf(
+                    '<error>No supervisor named %s.</error> Available: %s',
+                    implode(', ', array_map(static fn (string $n): string => '"' . $n . '"', $only)),
+                    $this->supervisorsConfig === [] ? '(none)' : implode(', ', array_keys($this->supervisorsConfig)),
+                ));
+
+                return Command::FAILURE;
+            }
+
+            $output->writeln('<error>Nothing to supervise.</error> No supervisors are configured, and no consumable Messenger transports were found to auto-discover.');
+            $output->writeln('');
+            $output->writeln('Either add a transport to <comment>config/packages/messenger.yaml</comment>, or configure one explicitly:');
             $output->writeln(<<<'YAML'
 
                 symfony_horizon:
@@ -90,6 +108,8 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
                             max_processes: 5
                             balance: auto
                 YAML);
+            $output->writeln('');
+            $output->writeln('Run <info>bin/console horizon:status</info> to see what Horizon can see.');
 
             return Command::FAILURE;
         }
@@ -103,13 +123,17 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
             $supervisors[] = new Supervisor($name, $block, $pool, $this->autoScaler, $this->queueDepths, $this->storage);
         }
 
-        $output->writeln(sprintf(
-            '<info>Horizon started</info> (pid %d, env %s) with supervisor%s: %s. Press Ctrl+C to stop gracefully.',
-            getmypid() ?: 0,
-            $this->environment,
-            \count($supervisors) > 1 ? 's' : '',
-            implode(', ', array_map(static fn (Supervisor $s) => $s->name(), $supervisors)),
-        ));
+        $output->writeln(sprintf('<info>Horizon started</info> (pid %d, env %s). Press Ctrl+C to stop gracefully.', getmypid() ?: 0, $this->environment));
+        foreach ($config as $name => $block) {
+            $output->writeln(sprintf(
+                '  <comment>%s</comment> → %s (%s)',
+                $name,
+                implode(', ', $block['transports']),
+                ($block['balance'] ?? 'off') === 'auto'
+                    ? sprintf('auto-scaling %d-%d workers', $block['min_processes'] ?? 1, $block['max_processes'] ?? 1)
+                    : sprintf('%d worker(s)', $block['min_processes'] ?? 1),
+            ));
+        }
 
         while (!$this->shouldTerminate) {
             foreach ($supervisors as $supervisor) {
@@ -137,17 +161,44 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
      */
     private function applyPendingCommands(array $supervisors, OutputInterface $output): void
     {
-        while (($command = $this->storage->popCommand()) !== null) {
-            $output->writeln(sprintf('<comment>[horizon]</comment> received command "%s"', $command));
+        try {
+            $state = $this->storage->readCommand();
+        } catch (\Throwable $e) {
+            // Losing control-plane reachability must not kill the supervisor;
+            // it keeps running with its current state and retries next tick.
+            $output->writeln(sprintf('<comment>[horizon]</comment> could not read control state: %s', $e->getMessage()));
 
-            foreach ($supervisors as $supervisor) {
-                match ($command) {
-                    StorageInterface::CMD_PAUSE => $supervisor->pause(),
-                    StorageInterface::CMD_CONTINUE => $supervisor->resume(),
-                    StorageInterface::CMD_TERMINATE => $this->shouldTerminate = true,
-                    default => null,
-                };
+            return;
+        }
+
+        if ($state === null) {
+            return;
+        }
+
+        // On startup adopt the current version without replaying it, so a
+        // freshly started instance does not re-run a long-past terminate.
+        if ($this->lastCommandVersion === null) {
+            $this->lastCommandVersion = $state['version'];
+
+            // A standing pause must still be honoured by an instance that
+            // starts while the cluster is paused.
+            if ($state['command'] !== StorageInterface::CMD_PAUSE) {
+                return;
             }
+        } elseif ($state['version'] <= $this->lastCommandVersion) {
+            return;
+        }
+
+        $this->lastCommandVersion = $state['version'];
+        $output->writeln(sprintf('<comment>[horizon]</comment> applying command "%s" (v%d)', $state['command'], $state['version']));
+
+        foreach ($supervisors as $supervisor) {
+            match ($state['command']) {
+                StorageInterface::CMD_PAUSE => $supervisor->pause(),
+                StorageInterface::CMD_CONTINUE => $supervisor->resume(),
+                StorageInterface::CMD_TERMINATE => $this->shouldTerminate = true,
+                default => null,
+            };
         }
     }
 

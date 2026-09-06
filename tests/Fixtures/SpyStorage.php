@@ -27,6 +27,12 @@ final class SpyStorage implements StorageInterface
     public array $jobs = [];
     /** @var list<string> */
     public array $commands = [];
+    /** @var array{command: string, version: int}|null */
+    public ?array $control = null;
+    public int $controlVersion = 0;
+    /** @var list<string> */
+    public array $lockAttempts = [];
+    public bool $lockGranted = true;
 
     public function flush(array $records, array $queueBuckets, array $classBuckets): void
     {
@@ -120,10 +126,18 @@ final class SpyStorage implements StorageInterface
     public function pushCommand(string $command): void
     {
         $this->commands[] = $command;
+        $this->control = ['command' => $command, 'version' => ++$this->controlVersion];
     }
 
-    public function popCommand(): ?string
+    public function readCommand(): ?array
     {
-        return array_shift($this->commands);
+        return $this->control;
+    }
+
+    public function acquireLock(string $name, int $ttlSeconds): bool
+    {
+        $this->lockAttempts[] = $name;
+
+        return $this->lockGranted;
     }
 }

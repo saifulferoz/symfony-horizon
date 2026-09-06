@@ -20,28 +20,36 @@ final class RedisStorage implements StorageInterface
     private const BUCKET_FIELDS_INT = ['jobs', 'failed', 'memory_sum', 'wait_count'];
     private const BUCKET_FIELDS_FLOAT = ['duration_sum', 'wait_sum'];
     /**
-     * Bump when the key layout changes incompatibly. Stale keys from another
-     * layout (e.g. lists where zsets are expected) make writes fail with
-     * WRONGTYPE silently inside pipelines, so on mismatch the prefix is wiped
-     * once and re-marked.
+     * Namespace segment appended to the configured prefix. Bump it when the key
+     * layout changes incompatibly: keys from an older layout are then simply
+     * never addressed again (and expire via their own TTLs) instead of having to
+     * be detected and wiped, which avoids both a blocking KEYS scan and the race
+     * of several processes wiping concurrently.
      */
-    private const SCHEMA_VERSION = '1';
+    private const SCHEMA_VERSION = 'v1';
 
     private ?object $client = null;
     private bool $isPhpRedis = false;
     /** @var array{recent: int, failed: int, metrics: int, snapshots: int} */
     private readonly array $trim;
 
+    /** Configured prefix plus the schema-version segment. */
+    private readonly string $prefix;
+
     /**
      * @param object $redis a client instance, or a \Closure returning one (so
      *                      no connection is opened until storage is first used)
+     * @param string $prefix key prefix; the schema version is appended to it
      * @param array{recent?: int, failed?: int, metrics?: int, snapshots?: int} $trim minutes
      */
     public function __construct(
         private readonly object $redis,
-        private readonly string $prefix = 'horizon:',
+        string $prefix = 'horizon:',
         array $trim = [],
     ) {
+        // All keys live under "<prefix><version>:", so an incompatible layout
+        // from an older release can never be read or written by this one.
+        $this->prefix = $prefix . self::SCHEMA_VERSION . ':';
         $this->trim = $trim + ['recent' => 60, 'failed' => 10080, 'metrics' => 1440, 'snapshots' => 10080];
     }
 
@@ -50,34 +58,9 @@ final class RedisStorage implements StorageInterface
         if ($this->client === null) {
             $this->client = $this->redis instanceof \Closure ? ($this->redis)() : $this->redis;
             $this->isPhpRedis = \extension_loaded('redis') && $this->client instanceof \Redis;
-            $this->ensureSchema();
         }
 
         return $this->client;
-    }
-
-    /**
-     * Once per process: wipe keys left behind by an incompatible bundle
-     * version. Runs before the first real command, so a fresh install only
-     * pays one GET.
-     */
-    private function ensureSchema(): void
-    {
-        $marker = $this->prefix . 'schema';
-        if ($this->client->get($marker) === self::SCHEMA_VERSION) {
-            return;
-        }
-
-        $keys = $this->client->keys($this->prefix . '*');
-        foreach (array_chunk(\is_array($keys) ? $keys : [], 500) as $chunk) {
-            $this->pipeline(static function (object $p) use ($chunk): void {
-                foreach ($chunk as $key) {
-                    $p->del($key);
-                }
-            });
-        }
-
-        $this->client->set($marker, self::SCHEMA_VERSION);
     }
 
     public function flush(array $records, array $queueBuckets, array $classBuckets): void
@@ -348,14 +331,46 @@ final class RedisStorage implements StorageInterface
 
     public function pushCommand(string $command): void
     {
-        $this->client()->rpush($this->prefix . 'commands', $command);
+        // Versioned state, not a queue: every horizon instance must observe the
+        // command, so nothing may consume it. INCR gives each broadcast a
+        // strictly increasing version that instances de-duplicate against.
+        $version = (int) $this->client()->incr($this->prefix . 'control:version');
+
+        $this->pipeline(function (object $p) use ($command, $version): void {
+            $p->hmset($this->prefix . 'control', [
+                'command' => $command,
+                'version' => (string) $version,
+                'issued_at' => (string) microtime(true),
+            ]);
+        });
     }
 
-    public function popCommand(): ?string
+    public function readCommand(): ?array
     {
-        $command = $this->client()->lpop($this->prefix . 'commands');
+        $state = $this->client()->hgetall($this->prefix . 'control');
+        if (!\is_array($state) || ($state['command'] ?? '') === '') {
+            return null;
+        }
 
-        return \is_string($command) && $command !== '' ? $command : null;
+        return [
+            'command' => (string) $state['command'],
+            'version' => (int) ($state['version'] ?? 0),
+        ];
+    }
+
+    public function acquireLock(string $name, int $ttlSeconds): bool
+    {
+        $client = $this->client(); // resolve first: this also decides $isPhpRedis
+        $key = $this->prefix . 'lock:' . $name;
+        $token = bin2hex(random_bytes(8));
+
+        // SET key value NX EX ttl — atomic across instances, and self-releasing
+        // so a crashed holder cannot block the lock forever.
+        $acquired = $this->isPhpRedis
+            ? $client->set($key, $token, ['nx', 'ex' => $ttlSeconds])
+            : $client->set($key, $token, 'EX', $ttlSeconds, 'NX');
+
+        return (bool) $acquired;
     }
 
     // --- internals -------------------------------------------------------
@@ -400,28 +415,52 @@ final class RedisStorage implements StorageInterface
     {
         $zset = $this->prefix . $zsetSuffix;
         $limit = max(1, min($limit, 200));
+        $offset = max(0, $offset);
 
-        $ids = $this->client()->zrevrange($zset, $offset, $offset + $limit - 1);
-        $ids = \is_array($ids) ? $ids : [];
         $total = (int) $this->client()->zcard($zset);
+        $jobs = [];
+        $dangling = [];
+        $cursor = $offset;
 
-        if ($ids === []) {
-            return ['total' => $total, 'jobs' => []];
+        // A job hash can expire (TTL) while its id still sits in the index, so
+        // keep pulling until the page is full: reporting a total the caller
+        // cannot actually page through renders empty pages in the UI.
+        while (\count($jobs) < $limit) {
+            $ids = $this->client()->zrevrange($zset, $cursor, $cursor + $limit - 1);
+            $ids = \is_array($ids) ? $ids : [];
+            if ($ids === []) {
+                break;
+            }
+            $cursor += \count($ids);
+
+            $results = $this->pipelineRead(function (object $p) use ($ids): void {
+                foreach ($ids as $id) {
+                    $p->hgetall($this->prefix . 'job:' . $id);
+                }
+            });
+
+            foreach ($ids as $i => $id) {
+                $row = $results[$i] ?? null;
+                if (\is_array($row) && $row !== []) {
+                    if (\count($jobs) < $limit) {
+                        $row['id'] ??= (string) $id;
+                        $jobs[] = $row;
+                    }
+                } else {
+                    $dangling[] = $id;
+                }
+            }
         }
 
-        $results = $this->pipelineRead(function (object $p) use ($ids): void {
-            foreach ($ids as $id) {
-                $p->hgetall($this->prefix . 'job:' . $id);
-            }
-        });
-
-        $jobs = [];
-        foreach ($ids as $i => $id) {
-            $row = $results[$i] ?? null;
-            if (\is_array($row) && $row !== []) {
-                $row['id'] ??= (string) $id;
-                $jobs[] = $row;
-            }
+        // Drop ids whose payload is gone, so the index self-heals and the
+        // reported total converges on what can really be fetched.
+        if ($dangling !== []) {
+            $this->pipeline(function (object $p) use ($zset, $dangling): void {
+                foreach ($dangling as $id) {
+                    $p->zrem($zset, $id);
+                }
+            });
+            $total = max(0, $total - \count($dangling));
         }
 
         return ['total' => $total, 'jobs' => $jobs];

@@ -156,8 +156,10 @@ final class SupervisorTest extends TestCase
         $supervisor->tick();
 
         self::assertNotSame([], $this->storage->supervisorHeartbeats);
-        [$name, $meta] = $this->storage->supervisorHeartbeats[0];
-        self::assertSame('default', $name);
+        [$instanceId, $meta] = $this->storage->supervisorHeartbeats[0];
+        self::assertSame($supervisor->instanceId(), $instanceId);
+        self::assertStringStartsWith('default@', $instanceId, 'the heartbeat key is host-qualified');
+        self::assertSame('default', $meta['name'], 'the configured name is still reported');
         self::assertSame('running', $meta['status']);
         self::assertSame('5', $meta['processes']);
         self::assertSame(['async' => 42], json_decode($meta['pending'], true));
@@ -171,6 +173,18 @@ final class SupervisorTest extends TestCase
         $supervisor->stop();
 
         self::assertTrue($this->pool->stopped);
-        self::assertSame(['default'], $this->storage->removedSupervisors);
+        self::assertSame([$supervisor->instanceId()], $this->storage->removedSupervisors);
+    }
+
+    public function testInstanceIdsAreUniqueEvenOnTheSameHostAndProcess(): void
+    {
+        // Two supervisors sharing a host and PID (two blocks in one horizon
+        // process, or two processes in one container) must not share a
+        // heartbeat key — otherwise one deregisters the other on shutdown.
+        $a = $this->supervisor();
+        $b = $this->supervisor();
+
+        self::assertNotSame($a->instanceId(), $b->instanceId());
+        self::assertStringStartsWith('default@', $a->instanceId());
     }
 }

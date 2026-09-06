@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Saifulferoz\SymfonyHorizon\Collector;
 
+use Psr\Log\LoggerInterface;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
 use Saifulferoz\SymfonyHorizon\Stamp\DispatchedAtStamp;
 use Saifulferoz\SymfonyHorizon\Tags\HorizonTags;
@@ -18,10 +19,20 @@ use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
  *
  * Captured per job: duration (hrtime), memory delta, true peak memory
  * (memory_reset_peak_usage), queue wait time (DispatchedAtStamp), attempts.
+ *
+ * Collecting metrics must never break message processing: every storage call
+ * is fail-safe, and the buffer is bounded so a storage outage can neither
+ * propagate an exception into the worker loop nor grow memory without limit.
  */
 final class MetricsCollector
 {
     private const HEARTBEAT_INTERVAL = 5.0;
+    /**
+     * Absolute ceiling on buffered records. Deliberately independent of
+     * flush_batch: a large batch size is precisely when an unreachable storage
+     * could otherwise let the buffer grow until the worker runs out of memory.
+     */
+    private const MAX_BUFFERED_RECORDS = 1000;
 
     /** @var list<JobRecord> */
     private array $records = [];
@@ -48,6 +59,7 @@ final class MetricsCollector
     private readonly float $sampling;
     private readonly bool $capturePayload;
     private readonly int $payloadMaxBytes;
+    private readonly int $maxBufferedRecords;
 
     /**
      * @param array{flush_batch?: int, flush_interval?: int, sampling?: float, capture_payload?: bool, payload_max_bytes?: int} $config
@@ -55,12 +67,14 @@ final class MetricsCollector
     public function __construct(
         private readonly StorageInterface $storage,
         array $config = [],
+        private readonly ?LoggerInterface $logger = null,
     ) {
         $this->flushBatch = $config['flush_batch'] ?? 25;
         $this->flushInterval = $config['flush_interval'] ?? 3;
         $this->sampling = $config['sampling'] ?? 1.0;
         $this->capturePayload = $config['capture_payload'] ?? false;
         $this->payloadMaxBytes = $config['payload_max_bytes'] ?? 10240;
+        $this->maxBufferedRecords = self::MAX_BUFFERED_RECORDS;
 
         $this->workerId = getmypid() . '@' . (gethostname() ?: 'unknown');
         $this->lastFlush = microtime(true);
@@ -135,7 +149,7 @@ final class MetricsCollector
     public function workerStopped(): void
     {
         $this->maybeFlush(true);
-        $this->storage->removeWorker($this->workerId);
+        $this->guard(fn () => $this->storage->removeWorker($this->workerId), 'deregister worker');
     }
 
     private function finalize(Envelope $envelope, string $status, ?\Throwable $error = null): void
@@ -205,6 +219,14 @@ final class MetricsCollector
                 exceptionTrace: $error !== null ? mb_substr($error->getTraceAsString(), 0, 20000) : null,
                 retryPayload: $retryPayload,
             );
+
+            // Storage may be down and every flush failing; never let the buffer
+            // outgrow the ceiling. Oldest records are dropped first.
+            $overflow = \count($this->records) - $this->maxBufferedRecords;
+            if ($overflow > 0) {
+                $this->records = \array_slice($this->records, $overflow);
+                $this->logger?->warning('Horizon metrics buffer full, dropped {count} oldest record(s)', ['count' => $overflow]);
+            }
         }
 
         $this->maybeFlush(false);
@@ -241,20 +263,49 @@ final class MetricsCollector
         }
 
         if ($this->records !== [] || $this->queueBuckets !== []) {
-            $this->storage->flush($this->records, $this->queueBuckets, $this->classBuckets);
+            // Detach the buffer BEFORE writing: a failing storage must not leave
+            // records queued for an unbounded number of retries, and must not
+            // keep the memory they occupy.
+            $records = $this->records;
+            $queueBuckets = $this->queueBuckets;
+            $classBuckets = $this->classBuckets;
             $this->records = [];
             $this->queueBuckets = [];
             $this->classBuckets = [];
+
+            $this->guard(
+                fn () => $this->storage->flush($records, $queueBuckets, $classBuckets),
+                'flush metrics batch',
+                ['records' => \count($records)],
+            );
         }
 
         $this->lastFlush = microtime(true);
+    }
+
+    /**
+     * Runs a storage call so that no failure can escape into the worker loop.
+     * Metrics are best-effort: losing a batch is always preferable to killing
+     * the consumer that produced it.
+     */
+    private function guard(callable $operation, string $what, array $context = []): void
+    {
+        try {
+            $operation();
+        } catch (\Throwable $e) {
+            $this->logger?->warning('Horizon could not {what}: {message}', $context + [
+                'what' => $what,
+                'message' => $e->getMessage(),
+                'exception' => $e,
+            ]);
+        }
     }
 
     private function heartbeat(string $status): void
     {
         $this->lastHeartbeat = microtime(true);
 
-        $this->storage->heartbeatWorker($this->workerId, [
+        $this->guard(fn () => $this->storage->heartbeatWorker($this->workerId, [
             'id' => $this->workerId,
             'pid' => (string) getmypid(),
             'host' => gethostname() ?: 'unknown',
@@ -265,7 +316,7 @@ final class MetricsCollector
             'failed' => (string) $this->failedCount,
             'memory' => (string) memory_get_usage(true),
             'started_at' => (string) $this->startedAt,
-        ]);
+        ]), 'record worker heartbeat');
     }
 
     private function serializePayload(object $message): string

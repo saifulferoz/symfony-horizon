@@ -9,6 +9,7 @@ use Saifulferoz\SymfonyHorizon\Collector\JobRecord;
 use Saifulferoz\SymfonyHorizon\Collector\MetricsCollector;
 use Saifulferoz\SymfonyHorizon\Stamp\DispatchedAtStamp;
 use Saifulferoz\SymfonyHorizon\Tags\HorizonTags;
+use Saifulferoz\SymfonyHorizon\Tests\Fixtures\BrokenStorage;
 use Saifulferoz\SymfonyHorizon\Tests\Fixtures\SpyStorage;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
@@ -211,5 +212,80 @@ final class MetricsCollectorTest extends TestCase
 
         $collector->workerStopped();
         self::assertSame([$workerId], $this->storage->removedWorkers);
+    }
+
+    // --- storage-outage resilience -------------------------------------
+    // Metrics collection must never be able to break message consumption.
+
+    public function testStorageFailureDoesNotEscapeIntoTheWorkerLoop(): void
+    {
+        $broken = new BrokenStorage();
+        $collector = new MetricsCollector($broken, ['flush_batch' => 1, 'flush_interval' => 9999]);
+        $envelope = new Envelope(new TaggedMessage());
+
+        $collector->workerStarted(['async']);
+        for ($i = 0; $i < 5; ++$i) {
+            $collector->jobReceived($envelope, 'async');
+            $collector->jobHandled($envelope);
+        }
+        $collector->workerRunning(idle: true);
+        $collector->workerStopped();
+
+        // Reaching here at all is the assertion: nothing propagated.
+        self::assertGreaterThan(0, $broken->flushAttempts, 'storage was actually exercised');
+    }
+
+    public function testFailedFlushDoesNotRetainRecords(): void
+    {
+        $broken = new BrokenStorage();
+        $collector = new MetricsCollector($broken, ['flush_batch' => 2, 'flush_interval' => 9999]);
+        $envelope = new Envelope(new TaggedMessage());
+
+        for ($i = 0; $i < 10; ++$i) {
+            $collector->jobReceived($envelope, 'async');
+            $collector->jobHandled($envelope);
+        }
+
+        $records = new \ReflectionProperty(MetricsCollector::class, 'records');
+        self::assertSame([], $records->getValue($collector), 'a failing flush must not keep buffering records');
+    }
+
+    public function testStorageFailureIsLogged(): void
+    {
+        $logged = [];
+        $logger = new class($logged) extends \Psr\Log\AbstractLogger {
+            public function __construct(private array &$logged)
+            {
+            }
+
+            public function log($level, \Stringable|string $message, array $context = []): void
+            {
+                $this->logged[] = [$level, (string) $message];
+            }
+        };
+
+        $collector = new MetricsCollector(new BrokenStorage(), ['flush_batch' => 1, 'flush_interval' => 9999], $logger);
+        $envelope = new Envelope(new TaggedMessage());
+        $collector->jobReceived($envelope, 'async');
+        $collector->jobHandled($envelope);
+
+        self::assertNotSame([], $logged, 'a dropped metrics batch must be visible in the logs');
+        self::assertSame('warning', $logged[0][0]);
+    }
+
+    public function testBufferIsCappedWhileStorageIsDown(): void
+    {
+        // flush_batch high enough that the batch trigger never fires, so only
+        // the hard ceiling can bound the buffer.
+        $collector = new MetricsCollector(new BrokenStorage(), ['flush_batch' => 100000, 'flush_interval' => 9999]);
+        $envelope = new Envelope(new TaggedMessage());
+
+        for ($i = 0; $i < 1200; ++$i) {
+            $collector->jobReceived($envelope, 'async');
+            $collector->jobHandled($envelope);
+        }
+
+        $records = new \ReflectionProperty(MetricsCollector::class, 'records');
+        self::assertLessThanOrEqual(1000, \count($records->getValue($collector)), 'buffer must not grow without bound');
     }
 }

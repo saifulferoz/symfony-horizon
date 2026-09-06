@@ -76,8 +76,11 @@ final class ApiController
     public function supervisors(): JsonResponse
     {
         $supervisors = [];
-        foreach ($this->storage->getSupervisors() as $name => $meta) {
-            $meta['name'] = $meta['name'] ?? (string) $name;
+        // Keys are per-instance ids (name@host:pid), so the same configured
+        // name legitimately appears once per host running it.
+        foreach ($this->storage->getSupervisors() as $instanceId => $meta) {
+            $meta['id'] = $meta['id'] ?? (string) $instanceId;
+            $meta['name'] = $meta['name'] ?? (string) $instanceId;
             $meta['processes'] = (int) ($meta['processes'] ?? 0);
             $pending = json_decode($meta['pending'] ?? '{}', true);
             $meta['pending'] = \is_array($pending) ? $pending : [];
