@@ -1,0 +1,19 @@
+{
+    "bundles": {
+        "Saifulferoz\\SymfonyHorizon\\SymfonyHorizonBundle": ["all"]
+    },
+    "copy-from-recipe": {
+        "config/": "%CONFIG_DIR%/"
+    },
+    "post-install-output": [
+        "  <fg=green>Symfony Horizon installed.</>",
+        "",
+        "  Dashboard : <fg=yellow>/horizon</> (protect it in security.yaml before production)",
+        "  Start     : <fg=yellow>php bin/console horizon</>",
+        "  Health    : <fg=yellow>php bin/console horizon:status</>",
+        "",
+        "  Transports are auto-discovered — no configuration needed to get going.",
+        "  Tune it in <fg=yellow>config/packages/symfony_horizon.yaml</> when you need to."
+    ],
+    "aliases": ["horizon"]
+}

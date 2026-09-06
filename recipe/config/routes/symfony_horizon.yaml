@@ -1,0 +1,3 @@
+symfony_horizon:
+    resource: '@SymfonyHorizonBundle/config/routes.php'
+    prefix: /horizon

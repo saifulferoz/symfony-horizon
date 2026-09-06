@@ -21,27 +21,26 @@ Laravel Horizon-style dashboard, supervisor and per-job metrics for **Symfony Me
 composer require saifulferoz/symfony-horizon
 ```
 
-Register the bundle (if not done by Flex), in `config/bundles.php`:
+That's it. No config file, no route import, no supervisor definitions:
 
-```php
-Saifulferoz\SymfonyHorizon\SymfonyHorizonBundle::class => ['all' => true],
+```bash
+php bin/console horizon          # starts workers for your transports
+php bin/console horizon:status   # is it healthy? what is it doing?
 ```
 
-Import the routes, e.g. `config/routes/symfony_horizon.yaml`:
+Then open **`/horizon`**.
 
-```yaml
-symfony_horizon:
-    resource: '@SymfonyHorizonBundle/config/routes.php'
-    prefix: /horizon
-```
+The bundle auto-discovers every consumable Messenger transport (skipping
+`sync://` and your failure transport), mounts the dashboard at `/horizon`, and
+registers itself via Flex. Everything below is optional tuning.
 
-**Protect the dashboard** with your own security config — the bundle deliberately ships no auth:
-
-```yaml
-# config/packages/security.yaml
-access_control:
-    - { path: ^/horizon, roles: ROLE_ADMIN }
-```
+> **Before production**, protect the dashboard — it can retry and delete jobs:
+>
+> ```yaml
+> # config/packages/security.yaml
+> access_control:
+>     - { path: ^/horizon, roles: ROLE_ADMIN }
+> ```
 
 ## Configuration
 
@@ -50,6 +49,12 @@ All keys are optional except `supervisors` (needed for the `horizon` command). D
 ```yaml
 # config/packages/symfony_horizon.yaml
 symfony_horizon:
+    dashboard:
+        enabled: true            # false = register no routes; wire them yourself
+        path: /horizon           # where the dashboard is mounted
+
+    autodiscover: true           # false = never infer supervisors from transports
+
     redis:
         dsn: 'redis://localhost:6379'
         # client_service: my.redis.service   # reuse an existing \Redis / Predis client instead
@@ -69,6 +74,8 @@ symfony_horizon:
         metrics: 1440            # per-minute metric buckets (24 h)
         snapshots: 10080         # hourly snapshots (7 days)
 
+    # Omit `supervisors` entirely to auto-discover transports. Define it to
+    # take full control — auto-discovery then switches off.
     supervisors:
         default:
             transports: [async]
@@ -86,6 +93,7 @@ symfony_horizon:
 
 ```bash
 bin/console horizon             # start supervisor + workers (use systemd/supervisord in prod)
+bin/console horizon:status      # health check: storage, supervisors, workers, queue depth
 bin/console horizon:pause       # stop consuming (graceful)
 bin/console horizon:continue    # resume
 bin/console horizon:terminate   # graceful shutdown
@@ -124,6 +132,39 @@ final class ChargeInvoice implements TaggableInterface
     }
 }
 ```
+
+## Resilience
+
+Monitoring must never break the thing it monitors:
+
+- **A storage outage cannot stop consumption.** Every Redis call from the worker
+  is fail-safe — a failure is logged (channel `horizon`) and the metrics batch is
+  dropped, while message handling continues untouched.
+- **The buffer is bounded.** At most 1000 records are held in memory, so a
+  prolonged Redis outage can never exhaust a worker's memory.
+- **Keys are namespaced by schema version** (`horizon:v1:`). An upgrade that
+  changes the key layout simply starts writing under a new namespace; old keys
+  expire through their own TTLs. No blocking `KEYS` scan, no cross-process wipe
+  race, and no destroyed data.
+- **Job indexes self-heal.** Ids whose payload has expired are pruned on read, so
+  the counts in the UI always match what can actually be listed.
+
+## Running on multiple hosts
+
+The bundle is safe to run on several servers against one Redis:
+
+- **Control commands are broadcast, not queued.** `horizon:pause`, `horizon:continue`
+  and `horizon:terminate` write a versioned control state that *every* instance
+  reads, so a pause stops the whole fleet rather than whichever process polled
+  first. An instance that starts while the fleet is paused pauses itself; one
+  that starts long after a terminate does not replay it.
+- **Supervisors are identified per instance** (`name@host:pid`), so each host
+  appears as its own row on the dashboard with its own process count instead of
+  overwriting the others.
+- **`horizon:snapshot` is cluster-safe.** Cron can fire on every host; a
+  short-lived Redis lock lets only one write the snapshot for an interval. The
+  lock self-expires, so a crashed run cannot block the next one. Use
+  `--force` to bypass it deliberately.
 
 ## Why it doesn't slow your app down
 

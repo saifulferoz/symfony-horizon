@@ -1,0 +1,18 @@
+symfony_horizon:
+    # Transports are auto-discovered from your Messenger configuration, so this
+    # file works as-is. Uncomment and adjust only what you need.
+    redis:
+        dsn: '%env(default:symfony_horizon.default_redis_dsn:REDIS_URL)%'
+
+    # supervisors:
+    #     default:
+    #         transports: [async]
+    #         min_processes: 1
+    #         max_processes: 10
+    #         balance: auto        # scale workers with queue depth
+    #     reports:
+    #         transports: [reports]
+    #         memory_limit: 512    # MB per worker
+
+parameters:
+    symfony_horizon.default_redis_dsn: 'redis://localhost:6379'

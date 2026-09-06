@@ -8,19 +8,23 @@ use Saifulferoz\SymfonyHorizon\Collector\MetricsCollector;
 use Saifulferoz\SymfonyHorizon\Command\HorizonCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonContinueCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonPauseCommand;
+use Saifulferoz\SymfonyHorizon\Command\HorizonStatusCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonTerminateCommand;
 use Saifulferoz\SymfonyHorizon\Command\SnapshotCommand;
 use Saifulferoz\SymfonyHorizon\Controller\ApiController;
 use Saifulferoz\SymfonyHorizon\Controller\DashboardController;
+use Saifulferoz\SymfonyHorizon\DependencyInjection\AutoDiscoverTransportsPass;
 use Saifulferoz\SymfonyHorizon\EventListener\DispatchedAtListener;
 use Saifulferoz\SymfonyHorizon\EventListener\WorkerEventSubscriber;
 use Saifulferoz\SymfonyHorizon\Retry\FailedJobRetryer;
+use Saifulferoz\SymfonyHorizon\Routing\HorizonRouteLoader;
 use Saifulferoz\SymfonyHorizon\Storage\RedisFactory;
 use Saifulferoz\SymfonyHorizon\Storage\RedisStorage;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
 use Saifulferoz\SymfonyHorizon\Supervisor\AutoScaler;
 use Saifulferoz\SymfonyHorizon\Supervisor\QueueDepthProvider;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
+use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
@@ -32,6 +36,26 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\service_c
 final class SymfonyHorizonBundle extends AbstractBundle
 {
     protected string $extensionAlias = 'symfony_horizon';
+
+    /**
+     * Defaults applied to an auto-discovered supervisor block. Kept in sync with
+     * the config tree below.
+     *
+     * @return array<string, mixed>
+     */
+    private static function supervisorDefaults(): array
+    {
+        return [
+            'min_processes' => 1,
+            'max_processes' => 3,
+            'balance' => 'auto',
+            'scale_factor' => 10,
+            'autoscale_cooldown' => 3,
+            'memory_limit' => 128,
+            'time_limit' => 3600,
+            'consume_options' => [],
+        ];
+    }
 
     public function configure(DefinitionConfigurator $definition): void
     {
@@ -77,12 +101,26 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 ->integerNode('snapshots')->defaultValue(10080)->info('Minutes to keep metric snapshots (default 7 days)')->end()
             ->end()->end()
 
+            ->arrayNode('dashboard')->addDefaultsIfNotSet()->children()
+                ->booleanNode('enabled')->defaultTrue()
+                    ->info('Register the dashboard and API routes automatically')
+                ->end()
+                ->scalarNode('path')->defaultValue('/horizon')
+                    ->info('URL prefix the dashboard is mounted at; protect it in security.yaml')
+                ->end()
+            ->end()->end()
+
+            ->booleanNode('autodiscover')->defaultTrue()
+                ->info('When no supervisors are configured, build a "default" one from the app\'s consumable Messenger transports')
+            ->end()
+
             ->arrayNode('supervisors')
-                ->info('Named supervisor blocks started by the horizon command, like Laravel Horizon environments')
+                ->info('Named supervisor blocks started by the horizon command, like Laravel Horizon environments. Omit entirely to auto-discover transports.')
                 ->useAttributeAsKey('name')
                 ->arrayPrototype()->children()
                     ->arrayNode('transports')
-                        ->isRequired()->requiresAtLeastOneElement()
+                        ->info('Transport names; defaults to every consumable transport when omitted')
+                        ->requiresAtLeastOneElement()
                         ->scalarPrototype()->end()
                     ->end()
                     ->integerNode('min_processes')->defaultValue(1)->min(0)->end()
@@ -111,9 +149,37 @@ final class SymfonyHorizonBundle extends AbstractBundle
         ->end();
     }
 
+    public function build(ContainerBuilder $container): void
+    {
+        parent::build($container);
+
+        // After MessengerPass, which is what fills in the consumable receiver list.
+        $container->addCompilerPass(new AutoDiscoverTransportsPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, -32);
+    }
+
+    public function prependExtension(ContainerConfigurator $container, ContainerBuilder $builder): void
+    {
+        // Mount the dashboard without the user having to import a route file.
+        $config = $builder->getExtensionConfig($this->extensionAlias);
+        $dashboard = array_merge(...array_column($config, 'dashboard') ?: [[]]);
+
+        if (($dashboard['enabled'] ?? true) === false) {
+            return;
+        }
+
+        $container->extension('framework', [
+            'router' => ['resource' => 'symfony_horizon_routes', 'type' => 'symfony_horizon'],
+        ]);
+    }
+
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
         $services = $container->services();
+
+        // Zero-config path: with no supervisors defined, a compiler pass fills
+        // in a "default" block from the app's own transports once they are known.
+        $builder->setParameter('symfony_horizon.autodiscover', $config['autodiscover'] && $config['supervisors'] === []);
+        $builder->setParameter('symfony_horizon.supervisor_defaults', self::supervisorDefaults());
 
         // --- Storage ---------------------------------------------------------
         if ($config['redis']['client_service'] !== null) {
@@ -140,7 +206,9 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ->args([
                 service('symfony_horizon.storage'),
                 $config['metrics'],
-            ]);
+                service('logger')->nullOnInvalid(),
+            ])
+            ->tag('monolog.logger', ['channel' => 'horizon']);
 
         // Worker* events only fire inside messenger:consume processes, so this
         // subscriber is never instantiated during web requests.
@@ -170,6 +238,14 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ])
             ->tag('console.command');
 
+        $services->set('symfony_horizon.command.status', HorizonStatusCommand::class)
+            ->args([
+                service('symfony_horizon.storage'),
+                service('symfony_horizon.queue_depth_provider'),
+                $config['supervisors'],
+            ])
+            ->tag('console.command');
+
         foreach ([
             'symfony_horizon.command.pause' => HorizonPauseCommand::class,
             'symfony_horizon.command.continue' => HorizonContinueCommand::class,
@@ -189,6 +265,12 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ]);
 
         // --- Dashboard / API ---------------------------------------------------
+        if ($config['dashboard']['enabled']) {
+            $services->set('symfony_horizon.route_loader', HorizonRouteLoader::class)
+                ->args([rtrim($config['dashboard']['path'], '/')])
+                ->tag('routing.loader');
+        }
+
         $services->set(DashboardController::class)
             ->tag('controller.service_arguments');
 

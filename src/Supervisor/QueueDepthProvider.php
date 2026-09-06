@@ -32,13 +32,19 @@ final class QueueDepthProvider
                 continue;
             }
 
-            $receiver = $this->receiverLocator->get($name);
-            if ($receiver instanceof MessageCountAwareInterface) {
-                try {
+            try {
+                // Instantiation itself can fail (a DSN whose transport package
+                // is not installed, bad credentials, ...). An unusable
+                // transport must be reported as unknown, never propagated:
+                // one broken DSN cannot be allowed to take down the
+                // supervisor or the status command.
+                $receiver = $this->receiverLocator->get($name);
+
+                if ($receiver instanceof MessageCountAwareInterface) {
                     $counts[$name] = $receiver->getMessageCount();
-                } catch (\Throwable) {
-                    // Transport unreachable right now; treat as unknown.
                 }
+            } catch (\Throwable) {
+                // Leave as null (unknown).
             }
         }
 
