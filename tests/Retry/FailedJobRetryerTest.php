@@ -45,6 +45,7 @@ final class FailedJobRetryerTest extends TestCase
     {
         $this->storage->jobs['job1'] = [
             'id' => 'job1',
+            'class' => RetryableMessage::class,
             'queue' => 'async_priority',
             'retry_payload' => base64_encode(serialize(new RetryableMessage(7))),
         ];
@@ -73,7 +74,7 @@ final class FailedJobRetryerTest extends TestCase
 
     public function testJobWithoutPayloadThrows(): void
     {
-        $this->storage->jobs['job1'] = ['id' => 'job1', 'queue' => 'async'];
+        $this->storage->jobs['job1'] = ['id' => 'job1', 'class' => RetryableMessage::class, 'queue' => 'async'];
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessageMatches('/no retryable payload/');
@@ -85,11 +86,42 @@ final class FailedJobRetryerTest extends TestCase
     {
         $this->storage->jobs['job1'] = [
             'id' => 'job1',
+            'class' => RetryableMessage::class,
             'queue' => 'async',
             'retry_payload' => base64_encode('not-a-serialized-object'),
         ];
 
         $this->expectException(\RuntimeException::class);
+
+        $this->retryer->retry('job1');
+    }
+
+    public function testRefusesAPayloadOfAnUnexpectedClass(): void
+    {
+        // A tampered payload must not be able to instantiate another class.
+        $this->storage->jobs['job1'] = [
+            'id' => 'job1',
+            'class' => RetryableMessage::class,
+            'queue' => 'async',
+            'retry_payload' => base64_encode(serialize(new \ArrayObject(['gadget']))),
+        ];
+
+        $this->expectException(\RuntimeException::class);
+
+        $this->retryer->retry('job1');
+    }
+
+    public function testRefusesAJobWhoseMessageClassNoLongerExists(): void
+    {
+        $this->storage->jobs['job1'] = [
+            'id' => 'job1',
+            'class' => 'App\\Message\\DeletedSinceDeploy',
+            'queue' => 'async',
+            'retry_payload' => base64_encode(serialize(new RetryableMessage())),
+        ];
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/unknown message class/');
 
         $this->retryer->retry('job1');
     }

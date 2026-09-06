@@ -187,8 +187,6 @@ final class FakeRedis
     /**
      * Predis-style SET with EX/NX modifiers, e.g. set($k, $v, 'EX', 60, 'NX').
      * Returns false when NX is given and the key already exists.
-     *
-     * @param string|int ...$modifiers
      */
     public function set(string $key, string $value, string|int ...$modifiers): bool
     {

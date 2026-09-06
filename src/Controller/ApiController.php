@@ -11,12 +11,17 @@ use Symfony\Component\HttpFoundation\Request;
 
 /**
  * JSON API polled by the dashboard.
+ *
+ * Retry and delete mutate the queue, so they can be switched off entirely with
+ * dashboard.read_only — useful wherever the dashboard is visible more widely
+ * than the people who should be allowed to re-dispatch or drop jobs.
  */
 final class ApiController
 {
     public function __construct(
         private readonly StorageInterface $storage,
         private readonly FailedJobRetryer $retryer,
+        private readonly bool $readOnly = false,
     ) {
     }
 
@@ -62,7 +67,7 @@ final class ApiController
     {
         $workers = [];
         foreach ($this->storage->getWorkers() as $id => $meta) {
-            $meta['id'] = $meta['id'] ?? (string) $id;
+            $meta['id'] ??= (string) $id;
             $meta['processed'] = (int) ($meta['processed'] ?? 0);
             $meta['failed'] = (int) ($meta['failed'] ?? 0);
             $meta['memory'] = (int) ($meta['memory'] ?? 0);
@@ -79,8 +84,8 @@ final class ApiController
         // Keys are per-instance ids (name@host:pid), so the same configured
         // name legitimately appears once per host running it.
         foreach ($this->storage->getSupervisors() as $instanceId => $meta) {
-            $meta['id'] = $meta['id'] ?? (string) $instanceId;
-            $meta['name'] = $meta['name'] ?? (string) $instanceId;
+            $meta['id'] ??= (string) $instanceId;
+            $meta['name'] ??= (string) $instanceId;
             $meta['processes'] = (int) ($meta['processes'] ?? 0);
             $pending = json_decode($meta['pending'] ?? '{}', true);
             $meta['pending'] = \is_array($pending) ? $pending : [];
@@ -112,6 +117,10 @@ final class ApiController
 
     public function retryJob(string $id): JsonResponse
     {
+        if ($this->readOnly) {
+            return $this->readOnlyResponse();
+        }
+
         try {
             $this->retryer->retry($id);
         } catch (\RuntimeException $e) {
@@ -123,6 +132,10 @@ final class ApiController
 
     public function deleteJob(string $id): JsonResponse
     {
+        if ($this->readOnly) {
+            return $this->readOnlyResponse();
+        }
+
         $this->storage->deleteFailedJob($id);
 
         return new JsonResponse(['ok' => true]);
@@ -139,6 +152,14 @@ final class ApiController
     }
 
     // --- internals -------------------------------------------------------
+
+    private function readOnlyResponse(): JsonResponse
+    {
+        return new JsonResponse(
+            ['error' => 'Horizon is in read-only mode; retry and delete are disabled.'],
+            403,
+        );
+    }
 
     /**
      * @param list<string> $names

@@ -62,8 +62,8 @@ final class HorizonStatusCommand extends Command
                     $name,
                     implode(', ', $transports),
                     ($block['balance'] ?? 'off') === 'auto'
-                        ? sprintf('auto %d-%d', $block['min_processes'] ?? 1, $block['max_processes'] ?? 1)
-                        : sprintf('fixed %d', $block['min_processes'] ?? 1),
+                        ? \sprintf('auto %d-%d', $block['min_processes'] ?? 1, $block['max_processes'] ?? 1)
+                        : \sprintf('fixed %d', $block['min_processes'] ?? 1),
                     implode('  ', array_map(
                         static fn (string $t, ?int $n): string => $t . ': ' . ($n ?? '?'),
                         array_keys($depths),
@@ -83,9 +83,9 @@ final class HorizonStatusCommand extends Command
         if ($supervisors === []) {
             $io->writeln('  Supervisors: <comment>none</comment> — start one with <info>bin/console horizon</info>');
         } else {
-            $io->writeln(sprintf('  Supervisors: <info>%d</info>', \count($supervisors)));
+            $io->writeln(\sprintf('  Supervisors: <info>%d</info>', \count($supervisors)));
             foreach ($supervisors as $meta) {
-                $io->writeln(sprintf(
+                $io->writeln(\sprintf(
                     '    %s on %s — %s, %s worker process(es)',
                     $meta['name'] ?? '?',
                     $meta['host'] ?? '?',
@@ -95,16 +95,16 @@ final class HorizonStatusCommand extends Command
             }
         }
 
-        $io->writeln(sprintf('  Workers reporting: <info>%d</info>', \count($workers)));
+        $io->writeln(\sprintf('  Workers reporting: <info>%d</info>', \count($workers)));
         if ($workers === [] && $supervisors === []) {
             $io->writeln('    <comment>No workers.</comment> Nothing is consuming messages.');
         }
 
         // 4. Throughput so far.
         $io->section('Totals');
-        $io->writeln(sprintf('  Jobs processed : %s', number_format($counters['jobs_total'])));
-        $io->writeln(sprintf('  Failed         : %s', number_format($counters['failed_total'])));
-        $io->writeln(sprintf('  Awaiting review: %s failed job(s) in the dashboard', number_format($counters['failed_count'])));
+        $io->writeln(\sprintf('  Jobs processed : %s', number_format($counters['jobs_total'])));
+        $io->writeln(\sprintf('  Failed         : %s', number_format($counters['failed_total'])));
+        $io->writeln(\sprintf('  Awaiting review: %s failed job(s) in the dashboard', number_format($counters['failed_count'])));
 
         $control = $this->storage->readCommand();
         if (($control['command'] ?? null) === StorageInterface::CMD_PAUSE) {

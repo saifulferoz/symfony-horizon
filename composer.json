@@ -28,6 +28,8 @@
         "symfony/process": "^6.4 || ^7.0 || ^8.0"
     },
     "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^10.5 || ^11.0 || ^12.0"
     },
     "suggest": {
@@ -48,5 +50,31 @@
     "config": {
         "sort-packages": true
     },
-    "minimum-stability": "stable"
+    "minimum-stability": "stable",
+    "scripts": {
+        "test": "phpunit",
+        "phpstan": "phpstan analyse --no-progress",
+        "cs": "php-cs-fixer fix --dry-run --diff",
+        "cs-fix": "php-cs-fixer fix",
+        "ci": [
+            "@test",
+            "@phpstan",
+            "@cs"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "Run the test suite",
+        "phpstan": "Run static analysis",
+        "cs": "Check coding standards",
+        "ci": "Run everything CI runs"
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "0.2-dev"
+        }
+    },
+    "support": {
+        "issues": "https://github.com/saifulferoz/symfony-horizon/issues",
+        "source": "https://github.com/saifulferoz/symfony-horizon"
+    }
 }

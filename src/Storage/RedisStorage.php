@@ -17,7 +17,7 @@ use Saifulferoz\SymfonyHorizon\Collector\JobRecord;
 final class RedisStorage implements StorageInterface
 {
     private const HEARTBEAT_TTL = 15;
-    private const BUCKET_FIELDS_INT = ['jobs', 'failed', 'memory_sum', 'wait_count'];
+    private const BUCKET_FIELDS_INT = ['jobs', 'failed', 'retries', 'memory_sum', 'wait_count'];
     private const BUCKET_FIELDS_FLOAT = ['duration_sum', 'wait_sum'];
     /**
      * Namespace segment appended to the configured prefix. Bump it when the key
@@ -224,7 +224,7 @@ final class RedisStorage implements StorageInterface
         $members = $this->client()->smembers($this->prefix . 'queues');
         sort($members);
 
-        return array_values($members);
+        return $members;
     }
 
     public function getClasses(): array
@@ -232,7 +232,7 @@ final class RedisStorage implements StorageInterface
         $members = $this->client()->smembers($this->prefix . 'classes');
         sort($members);
 
-        return array_values($members);
+        return $members;
     }
 
     public function getMetrics(string $type, string $name, int $minutes = 60): array
@@ -248,7 +248,7 @@ final class RedisStorage implements StorageInterface
             $stamps[] = ($nowMinute - $i) * 60;
         }
 
-        $results = $this->pipelineRead(function (object $p) use ($keyBase, $stamps): void {
+        $results = $this->pipelineRead(static function (object $p) use ($keyBase, $stamps): void {
             foreach ($stamps as $ts) {
                 $p->hgetall($keyBase . gmdate('YmdHi', $ts));
             }
@@ -265,6 +265,7 @@ final class RedisStorage implements StorageInterface
                 'ts' => $ts,
                 'jobs' => $jobs,
                 'failed' => (int) ($bucket['failed'] ?? 0),
+                'retries' => (int) ($bucket['retries'] ?? 0),
                 'avg_duration_ms' => $jobs > 0 ? round((float) ($bucket['duration_sum'] ?? 0) / $jobs, 2) : 0.0,
                 'avg_memory' => $jobs > 0 ? (int) ((float) ($bucket['memory_sum'] ?? 0) / $jobs) : 0,
                 'avg_wait_ms' => $waitCount > 0 ? round((float) ($bucket['wait_sum'] ?? 0) / $waitCount, 2) : 0.0,
@@ -455,7 +456,7 @@ final class RedisStorage implements StorageInterface
         // Drop ids whose payload is gone, so the index self-heals and the
         // reported total converges on what can really be fetched.
         if ($dangling !== []) {
-            $this->pipeline(function (object $p) use ($zset, $dangling): void {
+            $this->pipeline(static function (object $p) use ($zset, $dangling): void {
                 foreach ($dangling as $id) {
                     $p->zrem($zset, $id);
                 }
@@ -537,7 +538,7 @@ final class RedisStorage implements StorageInterface
             return \is_array($replies) ? array_values($replies) : [];
         }
 
-        throw new \LogicException(sprintf('Unsupported Redis client "%s": expected phpredis, Predis, or a client exposing pipeline(callable).', $client::class));
+        throw new \LogicException(\sprintf('Unsupported Redis client "%s": expected phpredis, Predis, or a client exposing pipeline(callable).', $client::class));
     }
 
     private function zAdd(object $connection, string $key, float $score, string $member): void

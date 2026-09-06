@@ -4,3 +4,5 @@
 /.phpunit.result.cache
 /.idea/
 /.vscode/
+/.php-cs-fixer.cache
+/.phpstan.cache

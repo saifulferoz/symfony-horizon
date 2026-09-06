@@ -7,10 +7,10 @@ namespace Saifulferoz\SymfonyHorizon\Tests\Collector;
 use PHPUnit\Framework\TestCase;
 use Saifulferoz\SymfonyHorizon\Collector\JobRecord;
 use Saifulferoz\SymfonyHorizon\Collector\MetricsCollector;
-use Saifulferoz\SymfonyHorizon\Stamp\DispatchedAtStamp;
 use Saifulferoz\SymfonyHorizon\Tags\HorizonTags;
 use Saifulferoz\SymfonyHorizon\Tests\Fixtures\BrokenStorage;
 use Saifulferoz\SymfonyHorizon\Tests\Fixtures\SpyStorage;
+use Saifulferoz\SymfonyHorizon\Transport\DispatchedAt;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 
@@ -31,6 +31,9 @@ final class MetricsCollectorTest extends TestCase
         $this->storage = new SpyStorage();
     }
 
+    /**
+     * @param array<string, mixed> $config
+     */
     private function collector(array $config = []): MetricsCollector
     {
         return new MetricsCollector($this->storage, $config + [
@@ -104,10 +107,10 @@ final class MetricsCollectorTest extends TestCase
         self::assertSame(1, $record->attempts);
     }
 
-    public function testComputesQueueWaitFromDispatchedAtStamp(): void
+    public function testComputesQueueWaitFromTheTransportHeader(): void
     {
         $collector = $this->collector();
-        $envelope = new Envelope(new TaggedMessage(), [new DispatchedAtStamp(microtime(true) - 0.25)]);
+        $envelope = new Envelope(new TaggedMessage(), [new DispatchedAt(microtime(true) - 0.25)]);
 
         $this->completeOneJob($collector, $envelope);
         $collector->workerRunning(idle: true);
@@ -149,11 +152,13 @@ final class MetricsCollectorTest extends TestCase
         self::assertSame(JobRecord::STATUS_RELEASED, $record->status);
         self::assertNull($record->retryPayload, 'messenger retries released jobs itself');
 
-        // a released attempt is not a final failure: the "failed" metric must
-        // stay consistent with the failed-jobs list on the dashboard
+        // A released attempt is neither a failure nor completed work: it is
+        // counted as a retry, so throughput and the failed metric both stay
+        // consistent with what the dashboard lists.
         $bucket = array_values($this->storage->flushes[0]['queueBuckets'])[0];
         self::assertSame(0, $bucket['failed']);
-        self::assertSame(1, $bucket['jobs']);
+        self::assertSame(0, $bucket['jobs'], 'a retried attempt is not throughput');
+        self::assertSame(1, $bucket['retries']);
     }
 
     public function testFinalFailureCountsInFailedBucket(): void
@@ -252,15 +257,13 @@ final class MetricsCollectorTest extends TestCase
 
     public function testStorageFailureIsLogged(): void
     {
-        $logged = [];
-        $logger = new class($logged) extends \Psr\Log\AbstractLogger {
-            public function __construct(private array &$logged)
-            {
-            }
+        $logger = new class extends \Psr\Log\AbstractLogger {
+            /** @var list<array{0: string, 1: string}> */
+            public array $logged = [];
 
             public function log($level, \Stringable|string $message, array $context = []): void
             {
-                $this->logged[] = [$level, (string) $message];
+                $this->logged[] = [(string) $level, (string) $message];
             }
         };
 
@@ -269,8 +272,8 @@ final class MetricsCollectorTest extends TestCase
         $collector->jobReceived($envelope, 'async');
         $collector->jobHandled($envelope);
 
-        self::assertNotSame([], $logged, 'a dropped metrics batch must be visible in the logs');
-        self::assertSame('warning', $logged[0][0]);
+        self::assertNotSame([], $logger->logged, 'a dropped metrics batch must be visible in the logs');
+        self::assertSame('warning', $logger->logged[0][0]);
     }
 
     public function testBufferIsCappedWhileStorageIsDown(): void
@@ -287,5 +290,26 @@ final class MetricsCollectorTest extends TestCase
 
         $records = new \ReflectionProperty(MetricsCollector::class, 'records');
         self::assertLessThanOrEqual(1000, \count($records->getValue($collector)), 'buffer must not grow without bound');
+    }
+
+    public function testRetryStormDoesNotInflateThroughput(): void
+    {
+        $collector = $this->collector(['flush_batch' => 100]);
+        $envelope = new Envelope(new TaggedMessage());
+
+        // one success, plus one message that fails three times then finally fails
+        $this->completeOneJob($collector);
+        for ($i = 0; $i < 3; ++$i) {
+            $collector->jobReceived($envelope, 'async');
+            $collector->jobFailed($envelope, new \RuntimeException('transient'), willRetry: true);
+        }
+        $collector->jobReceived($envelope, 'async');
+        $collector->jobFailed($envelope, new \RuntimeException('fatal'), willRetry: false);
+        $collector->workerRunning(idle: true);
+
+        $bucket = array_values($this->storage->flushes[0]['queueBuckets'])[0];
+        self::assertSame(2, $bucket['jobs'], 'two messages reached a final outcome');
+        self::assertSame(1, $bucket['failed']);
+        self::assertSame(3, $bucket['retries'], 'retries are tracked separately');
     }
 }

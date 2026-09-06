@@ -6,7 +6,7 @@ namespace Saifulferoz\SymfonyHorizon\Storage;
 
 /**
  * Creates a Redis client from a DSN, preferring phpredis over Predis.
- * DSN format: redis[s]://[user:password@]host[:port][/db]
+ * DSN format: redis[s]://[user:password@]host[:port][/db].
  */
 final class RedisFactory
 {
@@ -14,7 +14,7 @@ final class RedisFactory
     {
         $parts = parse_url($dsn);
         if ($parts === false || !isset($parts['host'])) {
-            throw new \InvalidArgumentException(sprintf('Invalid Redis DSN "%s".', $dsn));
+            throw new \InvalidArgumentException(\sprintf('Invalid Redis DSN "%s".', $dsn));
         }
 
         $host = $parts['host'];

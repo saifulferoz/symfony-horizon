@@ -39,7 +39,7 @@ final class Supervisor
         private readonly QueueDepthProvider $queueDepths,
         private readonly StorageInterface $storage,
     ) {
-        $this->instanceId = sprintf(
+        $this->instanceId = \sprintf(
             '%s@%s:%d.%s',
             $name,
             gethostname() ?: 'unknown',
@@ -122,6 +122,7 @@ final class Supervisor
             $this->config['min_processes'],
             $this->config['max_processes'],
             $this->config['scale_factor'],
+            $this->pool->count(),
         );
     }
 

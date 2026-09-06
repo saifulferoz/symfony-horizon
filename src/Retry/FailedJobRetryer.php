@@ -12,6 +12,9 @@ use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
  * Re-dispatches a failed job from the dashboard. The original message object
  * is stored PHP-serialized in the failed-job record; TransportNamesStamp
  * routes it back to the transport it originally failed on.
+ *
+ * Deserialization is restricted to the message class recorded with the job, so
+ * a tampered payload cannot instantiate arbitrary classes.
  */
 final class FailedJobRetryer
 {
@@ -28,27 +31,35 @@ final class FailedJobRetryer
     {
         $job = $this->storage->getJob($jobId);
         if ($job === null) {
-            throw new \RuntimeException(sprintf('Job "%s" was not found (it may have been trimmed).', $jobId));
+            throw new \RuntimeException(\sprintf('Job "%s" was not found (it may have been trimmed).', $jobId));
         }
 
         $payload = $job['retry_payload'] ?? '';
         if ($payload === '') {
-            throw new \RuntimeException(sprintf('Job "%s" has no retryable payload stored.', $jobId));
+            throw new \RuntimeException(\sprintf('Job "%s" has no retryable payload stored.', $jobId));
         }
 
         $decoded = base64_decode($payload, true);
         if ($decoded === false) {
-            throw new \RuntimeException(sprintf('Job "%s" has a corrupted retry payload.', $jobId));
+            throw new \RuntimeException(\sprintf('Job "%s" has a corrupted retry payload.', $jobId));
+        }
+
+        // Constrain deserialization to the class this job actually recorded.
+        // Redis is trusted infrastructure, but a shared or exposed instance
+        // would otherwise turn retry into an arbitrary-gadget sink.
+        $expected = $job['class'] ?? '';
+        if ($expected === '' || !class_exists($expected)) {
+            throw new \RuntimeException(\sprintf('Job "%s" refers to unknown message class "%s".', $jobId, $expected));
         }
 
         try {
-            $message = @unserialize($decoded);
+            $message = @unserialize($decoded, ['allowed_classes' => [$expected]]);
         } catch (\Throwable $e) {
-            throw new \RuntimeException(sprintf('Could not unserialize the message of job "%s": %s', $jobId, $e->getMessage()), 0, $e);
+            throw new \RuntimeException(\sprintf('Could not unserialize the message of job "%s": %s', $jobId, $e->getMessage()), 0, $e);
         }
 
-        if (!\is_object($message)) {
-            throw new \RuntimeException(sprintf('Job "%s" did not unserialize to a message object.', $jobId));
+        if (!$message instanceof $expected) {
+            throw new \RuntimeException(\sprintf('Job "%s" did not unserialize to a "%s" instance.', $jobId, $expected));
         }
 
         $stamps = [];

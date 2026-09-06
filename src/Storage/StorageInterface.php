@@ -15,7 +15,7 @@ interface StorageInterface
     /**
      * Persists a batch of job records and per-minute metric buckets in a single
      * round-trip. Bucket keys are "name|YmdHi" (UTC minute), bucket values are
-     * {jobs, failed, duration_sum, memory_sum, wait_sum, wait_count}.
+     * {jobs, failed, retries, duration_sum, memory_sum, wait_sum, wait_count}.
      *
      * @param list<JobRecord>                        $records
      * @param array<string, array<string, int|float>> $queueBuckets
@@ -69,7 +69,7 @@ interface StorageInterface
      * Per-minute series, oldest first. Type "q" = queue, "c" = class,
      * "all" = every queue combined (pass name "all").
      *
-     * @return list<array{minute: string, ts: int, jobs: int, failed: int, avg_duration_ms: float, avg_memory: int, avg_wait_ms: float}>
+     * @return list<array{minute: string, ts: int, jobs: int, failed: int, retries: int, avg_duration_ms: float, avg_memory: int, avg_wait_ms: float}>
      */
     public function getMetrics(string $type, string $name, int $minutes = 60): array;
 

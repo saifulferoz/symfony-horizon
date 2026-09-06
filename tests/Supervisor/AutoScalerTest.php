@@ -30,4 +30,33 @@ final class AutoScalerTest extends TestCase
     {
         self::assertSame($expected, (new AutoScaler())->desiredProcesses($pending, $min, $max, $scaleFactor));
     }
+
+    public function testScalesUpImmediately(): void
+    {
+        // Backlog is waiting: jump straight to target rather than one step.
+        self::assertSame(5, (new AutoScaler())->desiredProcesses(45, 1, 10, 10, current: 1));
+    }
+
+    public function testScalesDownOneWorkerAtATime(): void
+    {
+        $scaler = new AutoScaler();
+
+        // Target is 1, but the pool is at 5: step down gradually.
+        self::assertSame(4, $scaler->desiredProcesses(5, 1, 10, 10, current: 5));
+        self::assertSame(3, $scaler->desiredProcesses(5, 1, 10, 10, current: 4));
+        self::assertSame(2, $scaler->desiredProcesses(5, 1, 10, 10, current: 3));
+        self::assertSame(1, $scaler->desiredProcesses(5, 1, 10, 10, current: 2));
+        self::assertSame(1, $scaler->desiredProcesses(5, 1, 10, 10, current: 1), 'never below the target');
+    }
+
+    public function testHoldsSteadyWhenTargetMatchesCurrent(): void
+    {
+        self::assertSame(3, (new AutoScaler())->desiredProcesses(25, 1, 10, 10, current: 3));
+    }
+
+    public function testDampingNeverOvershootsTheTarget(): void
+    {
+        // A dip to target=4 from 5 must land on 4, not 4-1.
+        self::assertSame(4, (new AutoScaler())->desiredProcesses(35, 1, 10, 10, current: 5));
+    }
 }

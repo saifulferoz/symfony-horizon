@@ -53,6 +53,9 @@ final class SupervisorTest extends TestCase
     private RecordingPool $pool;
     private SpyStorage $storage;
 
+    /**
+     * @param array<string, mixed> $config
+     */
     private function supervisor(array $config = [], int $pending = 0): Supervisor
     {
         $receiver = new class($pending) implements MessageCountAwareInterface {

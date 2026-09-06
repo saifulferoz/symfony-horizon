@@ -86,7 +86,7 @@ final class PhpBinaryResolutionTest extends TestCase
         // what a bare PHP_BINARY would produce under FrankenPHP.
         foreach ([null, '', 'frankenphp php-cli'] as $configured) {
             $command = $this->consumeCommand($configured);
-            self::assertNotSame('', $command[0], sprintf('binary "%s" produced an empty program name', (string) $configured));
+            self::assertNotSame('', $command[0], \sprintf('binary "%s" produced an empty program name', (string) $configured));
         }
     }
 }

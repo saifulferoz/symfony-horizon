@@ -52,10 +52,12 @@ symfony_horizon:
     dashboard:
         enabled: true            # false = register no routes; wire them yourself
         path: /horizon           # where the dashboard is mounted
+        read_only: false         # true = observational only; retry/delete return 403
 
     autodiscover: true           # false = never infer supervisors from transports
     php_binary: ~                # binary used to spawn workers; set to
                                  # 'frankenphp php-cli' under FrankenPHP
+    console_path: ~              # console entrypoint (default: bin/console)
 
     redis:
         dsn: 'redis://localhost:6379'
@@ -68,7 +70,7 @@ symfony_horizon:
         sampling: 1.0            # store 1.0 = all job records; counters always count everything
         capture_payload: false   # store (truncated) payloads of successful jobs
         payload_max_bytes: 10240
-        wait_time_stamp: true    # tiny dispatch-side stamp enabling queue wait-time metrics
+        wait_time: true          # measure queue wait via an X-Horizon-Dispatched-At header
 
     trim:                        # retention, minutes
         recent: 60               # completed job records
@@ -184,6 +186,19 @@ Monitoring must never break the thing it monitors:
 - **Job indexes self-heal.** Ids whose payload has expired are pruned on read, so
   the counts in the UI always match what can actually be listed.
 
+## The bundle stays out of your wire format
+
+Queue wait time is measured with a plain `X-Horizon-Dispatched-At` transport
+header, never a Messenger stamp. A stamp is serialized as
+`X-Message-Stamp-<FQCN>`, and Messenger **refuses to decode a message whose
+stamp class it cannot load** — so a stamp would make every message produced by
+your app undecodable by any consumer that does not have this bundle installed
+(a second service on the same transport, or a partial rollout).
+
+A scalar header is ignored by consumers that know nothing about it, so
+installing or removing the bundle never poisons a queue. Set
+`metrics.wait_time: false` to drop the header entirely.
+
 ## Running on multiple hosts
 
 The bundle is safe to run on several servers against one Redis:
@@ -203,17 +218,20 @@ The bundle is safe to run on several servers against one Redis:
 
 ## Why it doesn't slow your app down
 
-1. **No web/dispatch overhead.** Metrics hook exclusively into `Worker*` events, which only exist inside `messenger:consume`. The single optional dispatch-side hook adds one timestamp stamp (microseconds, disable with `wait_time_stamp: false`).
+1. **No web/dispatch overhead.** Metrics hook exclusively into `Worker*` events, which only exist inside `messenger:consume`. The one dispatch-side cost is a single timestamp header written during serialization (microseconds, disable with `wait_time: false`).
 2. **Batched pipelined writes.** Job records and counters are buffered in the worker and written in one Redis pipeline per batch (default 25 jobs / 3 s) — not 3–5 round-trips per message.
 3. **Bounded Redis usage.** Charts read O(1) per-minute aggregate buckets; individual records live in trimmed, TTL'd keys.
 4. **Payloads are opt-in** and truncated; failed jobs always keep enough to debug and retry.
 5. **Sampling** (`sampling: 0.1`) for very high-volume queues — counters stay exact, only per-job detail rows are sampled.
 
-## Testing
+## Contributing
 
 ```bash
 composer install
-vendor/bin/phpunit
+composer test        # PHPUnit
+composer phpstan     # static analysis (level 6)
+composer cs          # coding standards (dry run)
+composer ci          # everything CI runs
 ```
 
 ## License

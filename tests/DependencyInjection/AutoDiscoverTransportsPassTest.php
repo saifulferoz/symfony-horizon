@@ -44,6 +44,9 @@ final class AutoDiscoverTransportsPassTest extends TestCase
         return $container;
     }
 
+    /**
+     * @return array<string, array<string, mixed>>
+     */
     private function discovered(ContainerBuilder $container): array
     {
         return $container->getDefinition('symfony_horizon.command.horizon')->getArgument(3);

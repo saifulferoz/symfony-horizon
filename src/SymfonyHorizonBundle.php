@@ -14,7 +14,7 @@ use Saifulferoz\SymfonyHorizon\Command\SnapshotCommand;
 use Saifulferoz\SymfonyHorizon\Controller\ApiController;
 use Saifulferoz\SymfonyHorizon\Controller\DashboardController;
 use Saifulferoz\SymfonyHorizon\DependencyInjection\AutoDiscoverTransportsPass;
-use Saifulferoz\SymfonyHorizon\EventListener\DispatchedAtListener;
+use Saifulferoz\SymfonyHorizon\DependencyInjection\WaitTimeSerializerPass;
 use Saifulferoz\SymfonyHorizon\EventListener\WorkerEventSubscriber;
 use Saifulferoz\SymfonyHorizon\Retry\FailedJobRetryer;
 use Saifulferoz\SymfonyHorizon\Routing\HorizonRouteLoader;
@@ -27,11 +27,12 @@ use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\Compiler\PassConfig;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
-use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 use function Symfony\Component\DependencyInjection\Loader\Configurator\param;
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service_closure;
+
+use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 final class SymfonyHorizonBundle extends AbstractBundle
 {
@@ -59,7 +60,6 @@ final class SymfonyHorizonBundle extends AbstractBundle
 
     public function configure(DefinitionConfigurator $definition): void
     {
-        // @phpstan-ignore-next-line ArrayNodeDefinition
         $root = $definition->rootNode();
 
         $root->children()
@@ -89,8 +89,8 @@ final class SymfonyHorizonBundle extends AbstractBundle
                     ->info('Store (truncated) message payloads for completed jobs; failed jobs always keep a payload')
                 ->end()
                 ->integerNode('payload_max_bytes')->defaultValue(10240)->min(256)->end()
-                ->booleanNode('wait_time_stamp')->defaultTrue()
-                    ->info('Add a dispatch timestamp stamp to async messages so queue wait time can be measured')
+                ->booleanNode('wait_time')->defaultTrue()
+                    ->info('Measure how long messages wait in the queue, via an "X-Horizon-Dispatched-At" transport header')
                 ->end()
             ->end()->end()
 
@@ -108,7 +108,14 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 ->scalarNode('path')->defaultValue('/horizon')
                     ->info('URL prefix the dashboard is mounted at; protect it in security.yaml')
                 ->end()
+                ->booleanNode('read_only')->defaultFalse()
+                    ->info('Disable retry and delete: the dashboard becomes purely observational')
+                ->end()
             ->end()->end()
+
+            ->scalarNode('console_path')->defaultNull()
+                ->info('Path to the console entrypoint, absolute or relative to the project dir (default: bin/console)')
+            ->end()
 
             ->scalarNode('php_binary')->defaultNull()
                 ->info('PHP binary used to spawn workers. Auto-detected; set it for FrankenPHP ("frankenphp php-cli") or a custom interpreter.')
@@ -159,6 +166,7 @@ final class SymfonyHorizonBundle extends AbstractBundle
 
         // After MessengerPass, which is what fills in the consumable receiver list.
         $container->addCompilerPass(new AutoDiscoverTransportsPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, -32);
+        $container->addCompilerPass(new WaitTimeSerializerPass(), PassConfig::TYPE_BEFORE_OPTIMIZATION, -32);
     }
 
     public function prependExtension(ContainerConfigurator $container, ContainerBuilder $builder): void
@@ -176,6 +184,9 @@ final class SymfonyHorizonBundle extends AbstractBundle
         ]);
     }
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
         $services = $container->services();
@@ -220,10 +231,9 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ->args([service('symfony_horizon.collector')])
             ->tag('kernel.event_subscriber');
 
-        if ($config['metrics']['wait_time_stamp']) {
-            $services->set('symfony_horizon.dispatched_at_listener', DispatchedAtListener::class)
-                ->tag('kernel.event_subscriber');
-        }
+        // Queue wait time travels as a scalar transport header, applied by
+        // decorating the app's serializer(s) in a compiler pass.
+        $builder->setParameter('symfony_horizon.wait_time', $config['metrics']['wait_time']);
 
         // --- Supervisor -------------------------------------------------------
         $services->set('symfony_horizon.queue_depth_provider', QueueDepthProvider::class)
@@ -240,6 +250,7 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 param('kernel.project_dir'),
                 param('kernel.environment'),
                 $config['php_binary'],
+                $config['console_path'],
             ])
             ->tag('console.command');
 
@@ -283,6 +294,7 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ->args([
                 service('symfony_horizon.storage'),
                 service('symfony_horizon.retryer'),
+                $config['dashboard']['read_only'],
             ])
             ->tag('controller.service_arguments');
     }

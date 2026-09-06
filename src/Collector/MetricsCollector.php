@@ -6,9 +6,9 @@ namespace Saifulferoz\SymfonyHorizon\Collector;
 
 use Psr\Log\LoggerInterface;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
-use Saifulferoz\SymfonyHorizon\Stamp\DispatchedAtStamp;
 use Saifulferoz\SymfonyHorizon\Tags\HorizonTags;
 use Saifulferoz\SymfonyHorizon\Tags\TaggableInterface;
+use Saifulferoz\SymfonyHorizon\Transport\DispatchedAt;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Stamp\RedeliveryStamp;
 use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
@@ -18,7 +18,7 @@ use Symfony\Component\Messenger\Stamp\TransportMessageIdStamp;
  * so consuming a message never pays a synchronous per-message Redis round-trip.
  *
  * Captured per job: duration (hrtime), memory delta, true peak memory
- * (memory_reset_peak_usage), queue wait time (DispatchedAtStamp), attempts.
+ * (memory_reset_peak_usage), queue wait time (transport header), attempts.
  *
  * Collecting metrics must never break message processing: every storage call
  * is fail-safe, and the buffer is bounded so a storage outage can neither
@@ -96,8 +96,8 @@ final class MetricsCollector
         $message = $envelope->getMessage();
 
         $waitMs = null;
-        $dispatched = $envelope->last(DispatchedAtStamp::class);
-        if ($dispatched instanceof DispatchedAtStamp) {
+        $dispatched = $envelope->last(DispatchedAt::class);
+        if ($dispatched instanceof DispatchedAt) {
             $waitMs = max(0.0, (microtime(true) - $dispatched->dispatchedAt) * 1000);
         }
 
@@ -177,8 +177,8 @@ final class MetricsCollector
         }
 
         $minute = gmdate('YmdHi', (int) $finishedAt);
-        $this->bumpBucket($this->queueBuckets, $current['queue'] . '|' . $minute, $isFinalFailure, $durationMs, $peakMemory, $current['wait_ms']);
-        $this->bumpBucket($this->classBuckets, $current['class'] . '|' . $minute, $isFinalFailure, $durationMs, $peakMemory, $current['wait_ms']);
+        $this->bumpBucket($this->queueBuckets, $current['queue'] . '|' . $minute, $status, $durationMs, $peakMemory, $current['wait_ms']);
+        $this->bumpBucket($this->classBuckets, $current['class'] . '|' . $minute, $status, $durationMs, $peakMemory, $current['wait_ms']);
 
         // Failed and released attempts are always recorded in detail;
         // completed jobs honour the sampling rate.
@@ -235,13 +235,21 @@ final class MetricsCollector
     /**
      * @param array<string, array<string, int|float>> $buckets
      */
-    private function bumpBucket(array &$buckets, string $key, bool $failed, float $durationMs, int $peakMemory, ?float $waitMs): void
+    private function bumpBucket(array &$buckets, string $key, string $status, float $durationMs, int $peakMemory, ?float $waitMs): void
     {
         $bucket = &$buckets[$key];
-        $bucket ??= ['jobs' => 0, 'failed' => 0, 'duration_sum' => 0.0, 'memory_sum' => 0, 'wait_sum' => 0.0, 'wait_count' => 0];
+        $bucket ??= ['jobs' => 0, 'failed' => 0, 'retries' => 0, 'duration_sum' => 0.0, 'memory_sum' => 0, 'wait_sum' => 0.0, 'wait_count' => 0];
 
-        ++$bucket['jobs'];
-        if ($failed) {
+        // "jobs" is throughput: work that reached a final outcome. A released
+        // attempt comes back and is counted on its final outcome instead, so a
+        // retry storm no longer inflates the throughput chart.
+        if ($status === JobRecord::STATUS_RELEASED) {
+            ++$bucket['retries'];
+        } else {
+            ++$bucket['jobs'];
+        }
+
+        if ($status === JobRecord::STATUS_FAILED) {
             ++$bucket['failed'];
         }
         $bucket['duration_sum'] += $durationMs;
@@ -287,6 +295,8 @@ final class MetricsCollector
      * Runs a storage call so that no failure can escape into the worker loop.
      * Metrics are best-effort: losing a batch is always preferable to killing
      * the consumer that produced it.
+     *
+     * @param array<string, scalar> $context
      */
     private function guard(callable $operation, string $what, array $context = []): void
     {
@@ -321,11 +331,9 @@ final class MetricsCollector
 
     private function serializePayload(object $message): string
     {
-        try {
-            $payload = json_encode($message, \JSON_UNESCAPED_SLASHES | \JSON_PARTIAL_OUTPUT_ON_ERROR | \JSON_INVALID_UTF8_SUBSTITUTE);
-        } catch (\Throwable) {
-            $payload = false;
-        }
+        // No JSON_THROW_ON_ERROR: partial output and substitution are enabled
+        // instead, so this returns a string or false rather than throwing.
+        $payload = json_encode($message, \JSON_UNESCAPED_SLASHES | \JSON_PARTIAL_OUTPUT_ON_ERROR | \JSON_INVALID_UTF8_SUBSTITUTE);
 
         if ($payload === false || $payload === '{}') {
             // json_encode only sees public properties; fall back to a readable dump.

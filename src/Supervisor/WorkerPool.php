@@ -101,7 +101,7 @@ class WorkerPool
             }
             : null);
 
-        $this->output?->writeln(sprintf('<info>[horizon]</info> started worker pid %d', $process->getPid() ?? 0));
+        $this->output?->writeln(\sprintf('<info>[horizon]</info> started worker pid %d', $process->getPid() ?? 0));
 
         return $process;
     }
@@ -117,6 +117,6 @@ class WorkerPool
         // Process::stop() escalates to SIGKILL after the grace period.
         $process->stop(30, \SIGTERM);
 
-        $this->output?->writeln(sprintf('<info>[horizon]</info> stopped worker pid %d', $pid ?? 0));
+        $this->output?->writeln(\sprintf('<info>[horizon]</info> stopped worker pid %d', $pid ?? 0));
     }
 }

@@ -33,6 +33,8 @@ final class SpyStorage implements StorageInterface
     /** @var list<string> */
     public array $lockAttempts = [];
     public bool $lockGranted = true;
+    /** @var array{0: int, 1: int}|null last [limit, offset] requested */
+    public ?array $lastPage = null;
 
     public function flush(array $records, array $queueBuckets, array $classBuckets): void
     {
@@ -76,11 +78,15 @@ final class SpyStorage implements StorageInterface
 
     public function getRecentJobs(int $limit = 50, int $offset = 0): array
     {
+        $this->lastPage = [$limit, $offset];
+
         return ['total' => 0, 'jobs' => []];
     }
 
     public function getFailedJobs(int $limit = 50, int $offset = 0): array
     {
+        $this->lastPage = [$limit, $offset];
+
         return ['total' => 0, 'jobs' => []];
     }
 
