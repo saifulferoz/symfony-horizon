@@ -54,6 +54,8 @@ symfony_horizon:
         path: /horizon           # where the dashboard is mounted
 
     autodiscover: true           # false = never infer supervisors from transports
+    php_binary: ~                # binary used to spawn workers; set to
+                                 # 'frankenphp php-cli' under FrankenPHP
 
     redis:
         dsn: 'redis://localhost:6379'
@@ -103,6 +105,39 @@ bin/console horizon:snapshot    # roll metrics into snapshots — cron it every 
 Open `https://your-app/horizon` for the dashboard. Autoscaling uses the transports' message counts and works with any transport implementing `MessageCountAwareInterface` (Doctrine, Redis, AMQP, ...).
 
 You can also run plain `bin/console messenger:consume` workers without the supervisor — they still report metrics and appear on the dashboard.
+
+### FrankenPHP / Caddy `supervisor`
+
+If Caddy's `supervisor` directive already manages your workers, **do not run
+`bin/console horizon`** — you would end up with two process managers. Keep your
+Caddyfile as-is; workers report metrics either way, because collection hooks
+Messenger's worker events, not the supervisor:
+
+```caddyfile
+supervisor {
+    php /app/bin/console messenger:consume default --time-limit=3600 --memory-limit=512M -vv {
+        dir /app
+        redirect_stdout stdout
+        redirect_stderr stderr
+        restart_policy always
+    }
+}
+```
+
+The dashboard, per-job metrics, failed jobs and retry all work. You lose only
+what the Horizon supervisor itself provides: autoscaling on queue depth and
+`horizon:pause` / `horizon:continue` (Caddy owns the process lifecycle instead).
+Supervisor rows on the dashboard stay empty; the Workers list is populated.
+
+If you *do* want Horizon to supervise under FrankenPHP, point it at the CLI
+binary — under FrankenPHP `PHP_BINARY` is empty, so it must be set explicitly:
+
+```yaml
+symfony_horizon:
+    php_binary: 'frankenphp php-cli'
+```
+
+and run `frankenphp php-cli bin/console horizon` as the supervised command.
 
 ### Deployment note
 

@@ -43,6 +43,7 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
         private readonly array $supervisorsConfig,
         private readonly string $projectDir,
         private readonly string $environment,
+        private readonly ?string $phpBinary = null,
     ) {
         parent::__construct();
     }
@@ -203,6 +204,37 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
     }
 
     /**
+     * Resolves the PHP binary used to spawn workers.
+     *
+     * PHP_BINARY is not usable everywhere: under FrankenPHP's CLI it is an
+     * empty string, and under other embedded SAPIs it can point at a server
+     * binary rather than a PHP interpreter. Both would make Process() fail or
+     * spawn the wrong program, so fall back to an explicit configuration value,
+     * then to a sane default for the current runtime.
+     *
+     * @return list<string> binary plus any leading arguments
+     */
+    private function resolvePhpBinary(): array
+    {
+        if ($this->phpBinary !== null && $this->phpBinary !== '') {
+            // Allow "frankenphp php-cli" or "/usr/bin/php -d opcache.enable=0".
+            return array_values(array_filter(explode(' ', $this->phpBinary), static fn (string $p): bool => $p !== ''));
+        }
+
+        // FrankenPHP: PHP_BINARY is empty; its CLI is reached via `frankenphp php-cli`.
+        if (\PHP_BINARY === '' || basename(\PHP_BINARY) === 'frankenphp') {
+            $franken = getenv('FRANKENPHP_BINARY');
+            if (!\is_string($franken) || $franken === '') {
+                $franken = \PHP_BINARY !== '' ? \PHP_BINARY : 'frankenphp';
+            }
+
+            return [$franken, 'php-cli'];
+        }
+
+        return [\PHP_BINARY];
+    }
+
+    /**
      * @param array<string, mixed> $block
      *
      * @return list<string>
@@ -212,7 +244,7 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
         $console = $this->projectDir . '/bin/console';
 
         $command = [
-            \PHP_BINARY,
+            ...$this->resolvePhpBinary(),
             $console,
             'messenger:consume',
             ...$block['transports'],

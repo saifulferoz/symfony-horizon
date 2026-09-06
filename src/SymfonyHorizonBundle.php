@@ -110,6 +110,10 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 ->end()
             ->end()->end()
 
+            ->scalarNode('php_binary')->defaultNull()
+                ->info('PHP binary used to spawn workers. Auto-detected; set it for FrankenPHP ("frankenphp php-cli") or a custom interpreter.')
+            ->end()
+
             ->booleanNode('autodiscover')->defaultTrue()
                 ->info('When no supervisors are configured, build a "default" one from the app\'s consumable Messenger transports')
             ->end()
@@ -235,6 +239,7 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 $config['supervisors'],
                 param('kernel.project_dir'),
                 param('kernel.environment'),
+                $config['php_binary'],
             ])
             ->tag('console.command');
 
