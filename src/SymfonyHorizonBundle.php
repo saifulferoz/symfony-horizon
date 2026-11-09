@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Saifulferoz\SymfonyHorizon;
 
 use Saifulferoz\SymfonyHorizon\Collector\MetricsCollector;
+use Saifulferoz\SymfonyHorizon\Command\HorizonBroadcastCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonContinueCommand;
 use Saifulferoz\SymfonyHorizon\Command\HorizonPauseCommand;
@@ -16,6 +17,10 @@ use Saifulferoz\SymfonyHorizon\Controller\DashboardController;
 use Saifulferoz\SymfonyHorizon\DependencyInjection\AutoDiscoverTransportsPass;
 use Saifulferoz\SymfonyHorizon\DependencyInjection\WaitTimeSerializerPass;
 use Saifulferoz\SymfonyHorizon\EventListener\WorkerEventSubscriber;
+use Saifulferoz\SymfonyHorizon\Realtime\DashboardBroadcaster;
+use Saifulferoz\SymfonyHorizon\Realtime\MercureUpdatePublisher;
+use Saifulferoz\SymfonyHorizon\Realtime\NullUpdatePublisher;
+use Saifulferoz\SymfonyHorizon\Realtime\SnapshotBuilder;
 use Saifulferoz\SymfonyHorizon\Retry\FailedJobRetryer;
 use Saifulferoz\SymfonyHorizon\Routing\HorizonRouteLoader;
 use Saifulferoz\SymfonyHorizon\Storage\RedisFactory;
@@ -111,6 +116,23 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 ->booleanNode('read_only')->defaultFalse()
                     ->info('Disable retry and delete: the dashboard becomes purely observational')
                 ->end()
+                ->arrayNode('realtime')->addDefaultsIfNotSet()->children()
+                    ->enumNode('transport')->values(['polling', 'mercure'])->defaultValue('polling')
+                        ->info('"polling" fetches on an interval; "mercure" pushes over SSE and falls back to polling if the stream drops')
+                    ->end()
+                    ->integerNode('interval')->defaultValue(3)->min(1)
+                        ->info('Seconds between dashboard polls (also the fallback cadence in mercure mode)')
+                    ->end()
+                    ->arrayNode('mercure')->addDefaultsIfNotSet()->children()
+                        ->scalarNode('hub')->defaultNull()
+                            ->info('Hub service id; defaults to mercure.hub.default')
+                        ->end()
+                        ->scalarNode('topic_prefix')->defaultValue('horizon://dashboard/')->end()
+                        ->integerNode('publish_interval')->defaultValue(1)->min(1)
+                            ->info('Seconds between pushes from the supervisor')
+                        ->end()
+                    ->end()->end()
+                ->end()->end()
             ->end()->end()
 
             ->scalarNode('console_path')->defaultNull()
@@ -251,7 +273,12 @@ final class SymfonyHorizonBundle extends AbstractBundle
                 param('kernel.environment'),
                 $config['php_binary'],
                 $config['console_path'],
+                service('symfony_horizon.broadcaster'),
             ])
+            ->tag('console.command');
+
+        $services->set('symfony_horizon.command.broadcast', HorizonBroadcastCommand::class)
+            ->args([service('symfony_horizon.broadcaster')])
             ->tag('console.command');
 
         $services->set('symfony_horizon.command.status', HorizonStatusCommand::class)
@@ -281,6 +308,39 @@ final class SymfonyHorizonBundle extends AbstractBundle
             ]);
 
         // --- Dashboard / API ---------------------------------------------------
+        // Shared by the JSON API and the real-time broadcaster so both
+        // transports emit identical payloads.
+        $services->set('symfony_horizon.snapshots', SnapshotBuilder::class)
+            ->args([service('symfony_horizon.storage')]);
+
+        // --- Real-time -----------------------------------------------------
+        $realtime = $config['dashboard']['realtime'];
+
+        if ($realtime['transport'] === 'mercure') {
+            $hub = $realtime['mercure']['hub'] ?? 'mercure.hub.default';
+
+            // Fail at container build with an actionable message: a dashboard
+            // that silently never updates is far harder to diagnose.
+            if (!interface_exists(\Symfony\Component\Mercure\HubInterface::class)) {
+                throw new \LogicException('symfony_horizon.dashboard.realtime.transport is "mercure" but the Mercure component is missing. Run: composer require symfony/mercure-bundle');
+            }
+
+            $services->set('symfony_horizon.publisher', MercureUpdatePublisher::class)
+                ->args([service($hub), service('logger')->nullOnInvalid()])
+                ->tag('monolog.logger', ['channel' => 'horizon']);
+        } else {
+            $services->set('symfony_horizon.publisher', NullUpdatePublisher::class);
+        }
+
+        $services->set('symfony_horizon.broadcaster', DashboardBroadcaster::class)
+            ->args([
+                service('symfony_horizon.snapshots'),
+                service('symfony_horizon.publisher'),
+                service('symfony_horizon.storage'),
+                $realtime['mercure']['topic_prefix'],
+                $realtime['mercure']['publish_interval'],
+            ]);
+
         if ($config['dashboard']['enabled']) {
             $services->set('symfony_horizon.route_loader', HorizonRouteLoader::class)
                 ->args([rtrim($config['dashboard']['path'], '/')])
@@ -288,12 +348,24 @@ final class SymfonyHorizonBundle extends AbstractBundle
         }
 
         $services->set(DashboardController::class)
+            ->args([
+                [
+                    'transport' => $realtime['transport'],
+                    'interval' => $realtime['interval'],
+                    'mercure' => [
+                        'topic_prefix' => $realtime['mercure']['topic_prefix'],
+                        'public_url' => '%env(default::MERCURE_PUBLIC_URL)%',
+                    ],
+                ],
+                service(\Symfony\Component\Mercure\Authorization::class)->nullOnInvalid(),
+            ])
             ->tag('controller.service_arguments');
 
         $services->set(ApiController::class)
             ->args([
                 service('symfony_horizon.storage'),
                 service('symfony_horizon.retryer'),
+                service('symfony_horizon.snapshots'),
                 $config['dashboard']['read_only'],
             ])
             ->tag('controller.service_arguments');

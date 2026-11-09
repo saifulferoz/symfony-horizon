@@ -81,7 +81,7 @@ th.num{text-align:right}
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#7c6cf5" stroke-width="2"/><path d="M4 14c3-5 13-5 16 0" stroke="#4f9cf7" stroke-width="2" stroke-linecap="round"/></svg>
     Horizon <span style="color:var(--muted);font-weight:400">/ Symfony Messenger</span>
   </div>
-  <div class="env"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></div>
+  <div class="env"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span><span id="statusMode" style="opacity:.65"></span></div>
 </header>
 <nav id="nav">
   <button data-view="overview" class="active">Overview</button>
@@ -148,6 +148,7 @@ th.num{text-align:right}
 <script>
 "use strict";
 const BASE = "__BASE_PATH__";
+const RT = Object.assign({transport:"polling", interval:3, topics:[], hub:null}, __REALTIME__);
 const api = p => fetch(BASE + "/api/" + p).then(r => r.json());
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
@@ -230,7 +231,12 @@ function setStatus(ok) {
 
 let lastStats = null;
 async function loadStats() {
-  const s = lastStats = await api("stats");
+  applyStats(await api("stats"));
+}
+
+// Rendering is shared: a pushed payload and a polled one must paint identically.
+function applyStats(s) {
+  lastStats = s;
   const set = (id, v) => document.getElementById(id).textContent = v;
   set("c-jpm", fmtNum(s.jobs_per_minute));
   set("c-hour", fmtNum(s.jobs_last_hour));
@@ -314,10 +320,14 @@ async function loadWorkers() {
       </tr>`).join("") + "</tbody></table>";
 
   const w = await api("workers");
-  document.getElementById("workers-table").innerHTML = !w.workers.length
+  renderWorkers(w.workers);
+}
+
+function renderWorkers(workers) {
+  document.getElementById("workers-table").innerHTML = !workers.length
     ? '<div class="empty">No workers reporting.</div>'
     : `<table><thead><tr><th>Worker</th><th>Transports</th><th>Status</th><th class="num">Processed</th><th class="num">Failed</th><th class="num">Memory</th><th class="num">Uptime</th></tr></thead><tbody>` +
-      w.workers.map(v => `<tr>
+      workers.map(v => `<tr>
         <td class="mono">${esc(v.id)}</td>
         <td class="mono">${esc(v.transports || "")}</td>
         <td><span class="status ${esc(v.status)}">${esc(v.status)}</span>${v.current_class ? `<div class="sub mono">${esc(shortClass(v.current_class))}</div>` : ""}</td>
@@ -384,12 +394,111 @@ function toast(msg, err) {
   toastTimer = setTimeout(() => el.style.display = "none", 3500);
 }
 
-refresh();
-timer = setInterval(refresh, 3000);
-document.addEventListener("visibilitychange", () => {
+/* ---- transport: server push (Mercure) with a polling fallback ---- */
+const POLL_MS = Math.max(1, RT.interval || 3) * 1000;
+let stream = null, staleTimer = null, retryDelay = 1000, mode = "polling";
+
+function setMode(next, note) {
+  mode = next;
+  const el = document.getElementById("statusMode");
+  if (el) { el.textContent = note; el.title = note; }
+}
+
+function startPolling() {
   clearInterval(timer);
-  if (!document.hidden) { refresh(); timer = setInterval(refresh, 3000); }
+  timer = setInterval(refresh, POLL_MS);
+}
+function stopPolling() { clearInterval(timer); timer = null; }
+
+function stopStream() {
+  if (stream) { stream.close(); stream = null; }
+  clearTimeout(staleTimer);
+  staleTimer = null;
+}
+
+// A hub behind a proxy can hang instead of erroring, so silence is treated as
+// failure too: no message within several publish intervals means degrade.
+function armStaleTimer() {
+  clearTimeout(staleTimer);
+  staleTimer = setTimeout(() => {
+    if (mode !== "stream") return;
+    setMode("polling", "realtime stalled — polling");
+    stopStream();
+    startPolling();
+    scheduleStreamRetry();
+  }, Math.max(POLL_MS * 3, 9000));
+}
+
+function scheduleStreamRetry() {
+  setTimeout(() => { if (mode !== "stream") startStream(); }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, 60000);
+}
+
+function startStream() {
+  if (!RT.hub || !("EventSource" in window)) { startPolling(); return; }
+
+  let url;
+  try {
+    url = new URL(RT.hub, window.location.href);
+  } catch (e) { startPolling(); return; }
+  (RT.topics || []).forEach(t => url.searchParams.append("topic", t));
+
+  try {
+    stream = new EventSource(url, {withCredentials: true});
+  } catch (e) { startPolling(); return; }
+
+  stream.onopen = () => {
+    retryDelay = 1000;
+    setMode("stream", "realtime");
+    stopPolling();          // push is live; stop duplicating work
+    armStaleTimer();
+  };
+
+  stream.onmessage = event => {
+    armStaleTimer();
+    let payload;
+    try { payload = JSON.parse(event.data); } catch (e) { return; }
+
+    // Topic is not exposed to the client, so route on the payload's shape.
+    if (payload && Array.isArray(payload.workers)) {
+      if (view === "workers") renderWorkers(payload.workers);
+      return;
+    }
+    if (payload && typeof payload.jobs_total === "number") {
+      applyStats(payload);
+      // Detail views still read through the API; refresh the visible one.
+      if (view === "recent") loadRecent();
+      else if (view === "failed") loadFailed();
+      else if (view === "metrics") loadMetrics();
+      else if (view === "workers") loadWorkers();
+    }
+  };
+
+  stream.onerror = () => {
+    if (stream && stream.readyState === EventSource.CONNECTING) return; // auto-retrying
+    setMode("polling", "realtime unavailable — polling");
+    stopStream();
+    startPolling();
+    scheduleStreamRetry();
+  };
+}
+
+// SSE carries changes, so the first paint must not wait for an event.
+refresh();
+
+if (RT.transport === "mercure") { setMode("polling", "connecting…"); startStream(); }
+else { startPolling(); }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopPolling();
+    stopStream();            // don't hold a hub connection in a background tab
+  } else {
+    refresh();
+    if (RT.transport === "mercure") startStream(); else startPolling();
+  }
 });
+window.addEventListener("beforeunload", () => { stopPolling(); stopStream(); });
 </script>
 </body>
 </html>

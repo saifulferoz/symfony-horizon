@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Saifulferoz\SymfonyHorizon\Controller;
 
+use Saifulferoz\SymfonyHorizon\Realtime\SnapshotBuilder;
 use Saifulferoz\SymfonyHorizon\Retry\FailedJobRetryer;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -21,78 +22,24 @@ final class ApiController
     public function __construct(
         private readonly StorageInterface $storage,
         private readonly FailedJobRetryer $retryer,
+        private readonly SnapshotBuilder $snapshots,
         private readonly bool $readOnly = false,
     ) {
     }
 
     public function stats(): JsonResponse
     {
-        $counters = $this->storage->getCounters();
-        $series = $this->storage->getMetrics('all', 'all', 60);
-        $workers = $this->storage->getWorkers();
-        $supervisors = $this->storage->getSupervisors();
-
-        $jobsLastHour = 0;
-        $failedLastHour = 0;
-        $durationWeighted = 0.0;
-        $memoryWeighted = 0.0;
-        $waitWeighted = 0.0;
-        foreach ($series as $point) {
-            $jobsLastHour += $point['jobs'];
-            $failedLastHour += $point['failed'];
-            $durationWeighted += $point['avg_duration_ms'] * $point['jobs'];
-            $memoryWeighted += $point['avg_memory'] * $point['jobs'];
-            $waitWeighted += $point['avg_wait_ms'] * $point['jobs'];
-        }
-
-        $lastMinute = $series !== [] ? $series[\count($series) - 2] ?? $series[0] : null;
-
-        return new JsonResponse([
-            'jobs_total' => $counters['jobs_total'],
-            'failed_total' => $counters['failed_total'],
-            'failed_count' => $counters['failed_count'],
-            'jobs_per_minute' => $lastMinute['jobs'] ?? 0,
-            'jobs_last_hour' => $jobsLastHour,
-            'failed_last_hour' => $failedLastHour,
-            'avg_duration_ms' => $jobsLastHour > 0 ? round($durationWeighted / $jobsLastHour, 2) : 0,
-            'avg_memory' => $jobsLastHour > 0 ? (int) ($memoryWeighted / $jobsLastHour) : 0,
-            'avg_wait_ms' => $jobsLastHour > 0 ? round($waitWeighted / $jobsLastHour, 2) : 0,
-            'workers' => \count($workers),
-            'supervisors' => \count($supervisors),
-            'series' => $series,
-        ]);
+        return new JsonResponse($this->snapshots->stats());
     }
 
     public function workers(): JsonResponse
     {
-        $workers = [];
-        foreach ($this->storage->getWorkers() as $id => $meta) {
-            $meta['id'] ??= (string) $id;
-            $meta['processed'] = (int) ($meta['processed'] ?? 0);
-            $meta['failed'] = (int) ($meta['failed'] ?? 0);
-            $meta['memory'] = (int) ($meta['memory'] ?? 0);
-            $meta['started_at'] = (float) ($meta['started_at'] ?? 0);
-            $workers[] = $meta;
-        }
-
-        return new JsonResponse(['workers' => $workers]);
+        return new JsonResponse($this->snapshots->workers());
     }
 
     public function supervisors(): JsonResponse
     {
-        $supervisors = [];
-        // Keys are per-instance ids (name@host:pid), so the same configured
-        // name legitimately appears once per host running it.
-        foreach ($this->storage->getSupervisors() as $instanceId => $meta) {
-            $meta['id'] ??= (string) $instanceId;
-            $meta['name'] ??= (string) $instanceId;
-            $meta['processes'] = (int) ($meta['processes'] ?? 0);
-            $pending = json_decode($meta['pending'] ?? '{}', true);
-            $meta['pending'] = \is_array($pending) ? $pending : [];
-            $supervisors[] = $meta;
-        }
-
-        return new JsonResponse(['supervisors' => $supervisors]);
+        return new JsonResponse($this->snapshots->supervisors());
     }
 
     public function recentJobs(Request $request): JsonResponse

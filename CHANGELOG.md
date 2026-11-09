@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Optional real-time dashboard updates over Mercure (SSE). Set
+  `dashboard.realtime.transport: mercure`; polling remains the default and the
+  fallback. Requires `symfony/mercure-bundle`.
+- `horizon:broadcast` publishes dashboard updates for deployments whose workers
+  are managed outside `bin/console horizon` (Caddy supervisor, systemd, k8s).
+- Dashboard payloads are built by a shared `SnapshotBuilder`, so polling and
+  push deliver identical data.
+
 ## [0.2.0] — 2026-09-06
 
 First release intended for general use. Contains breaking changes from `0.1.x`.

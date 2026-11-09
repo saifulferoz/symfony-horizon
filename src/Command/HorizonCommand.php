@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Saifulferoz\SymfonyHorizon\Command;
 
+use Saifulferoz\SymfonyHorizon\Realtime\DashboardBroadcaster;
 use Saifulferoz\SymfonyHorizon\Storage\StorageInterface;
 use Saifulferoz\SymfonyHorizon\Supervisor\AutoScaler;
 use Saifulferoz\SymfonyHorizon\Supervisor\QueueDepthProvider;
@@ -47,6 +48,7 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
         private readonly string $environment,
         private readonly ?string $phpBinary = null,
         private readonly ?string $consolePath = null,
+        private readonly ?DashboardBroadcaster $broadcaster = null,
     ) {
         parent::__construct();
     }
@@ -148,6 +150,10 @@ final class HorizonCommand extends Command implements SignalableCommandInterface
             }
 
             $this->applyPendingCommands($supervisors, $output);
+
+            // Push a dashboard snapshot. No-op in polling mode, and lock-guarded
+            // so one instance publishes for the whole cluster.
+            $this->broadcaster?->tick();
 
             $this->sleepUntilNextTick();
         }

@@ -6,6 +6,7 @@ namespace Saifulferoz\SymfonyHorizon\Tests\Controller;
 
 use PHPUnit\Framework\TestCase;
 use Saifulferoz\SymfonyHorizon\Controller\ApiController;
+use Saifulferoz\SymfonyHorizon\Realtime\SnapshotBuilder;
 use Saifulferoz\SymfonyHorizon\Retry\FailedJobRetryer;
 use Saifulferoz\SymfonyHorizon\Tests\Fixtures\SpyStorage;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -31,7 +32,12 @@ final class ApiControllerTest extends TestCase
             }
         };
 
-        return new ApiController($this->storage, new FailedJobRetryer($this->storage, $bus), $readOnly);
+        return new ApiController(
+            $this->storage,
+            new FailedJobRetryer($this->storage, $bus),
+            new SnapshotBuilder($this->storage),
+            $readOnly,
+        );
     }
 
     /** @return array<string, mixed> */

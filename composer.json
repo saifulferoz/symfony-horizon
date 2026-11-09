@@ -30,12 +30,14 @@
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.64",
         "phpstan/phpstan": "^2.0",
-        "phpunit/phpunit": "^10.5 || ^11.0 || ^12.0"
+        "phpunit/phpunit": "^10.5 || ^11.0 || ^12.0",
+        "symfony/mercure": "^0.6 || ^0.7 || ^0.8 || ^0.9 || ^0.10"
     },
     "suggest": {
         "ext-pcntl": "For graceful shutdown of the horizon supervisor on SIGTERM/SIGINT",
         "ext-redis": "Fastest Redis client for metrics storage (phpredis)",
-        "predis/predis": "Pure PHP Redis client, used when ext-redis is not available"
+        "predis/predis": "Pure PHP Redis client, used when ext-redis is not available",
+        "symfony/mercure-bundle": "Real-time dashboard updates over SSE instead of polling"
     },
     "autoload": {
         "psr-4": {

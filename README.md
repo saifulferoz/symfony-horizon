@@ -53,6 +53,13 @@ symfony_horizon:
         enabled: true            # false = register no routes; wire them yourself
         path: /horizon           # where the dashboard is mounted
         read_only: false         # true = observational only; retry/delete return 403
+        realtime:
+            transport: polling   # polling | mercure
+            interval: 3          # seconds between polls (and the fallback cadence)
+            mercure:
+                hub: ~               # service id; defaults to mercure.hub.default
+                topic_prefix: 'horizon://dashboard/'
+                publish_interval: 1  # seconds between pushes
 
     autodiscover: true           # false = never infer supervisors from transports
     php_binary: ~                # binary used to spawn workers; set to
@@ -169,6 +176,53 @@ final class ChargeInvoice implements TaggableInterface
     }
 }
 ```
+
+## Real-time updates (optional)
+
+By default the dashboard polls every 3 seconds. With Mercure it receives server
+pushes instead, so a failed job shows up immediately and idle tabs stop
+generating load:
+
+```bash
+composer require symfony/mercure-bundle
+```
+
+```yaml
+symfony_horizon:
+    dashboard:
+        realtime:
+            transport: mercure
+```
+
+Updates are published by the supervisor (`bin/console horizon`), not by workers
+— publishing is an HTTP call, and the message-handling path stays free of it. On
+a multi-host deployment a short cluster lock elects one publisher per interval,
+so viewers get one copy rather than one per host.
+
+**If your workers are managed by something other than `bin/console horizon`**
+(Caddy's `supervisor`, systemd, Kubernetes), run the publisher alongside them:
+
+```bash
+bin/console horizon:broadcast
+```
+
+Choosing `transport: mercure` without the Mercure bundle installed fails at
+container build with the install command, rather than leaving a dashboard that
+silently never updates.
+
+### Gotchas worth knowing
+
+- **The hub must share a registrable domain with your app.** The subscriber
+  cookie cannot be set across second-level domains — an app on `example.com`
+  cannot use a hub on `mercure.io`. Sub-domains are fine. If the cookie cannot
+  be minted, the dashboard logs nothing and quietly serves polling instead.
+- **The stream degrades loudly, not silently.** If the hub drops or goes quiet
+  for 3× the publish interval, the page falls back to polling and the status
+  chip says so, retrying the stream with backoff.
+- **Updates are private and scoped.** The subscriber token grants `subscribe` on
+  the two horizon topics only, never `*`, so a shared hub cannot leak your queue
+  names and failure counts to other applications. `read_only: true` does not
+  restrict what the stream exposes.
 
 ## Resilience
 
